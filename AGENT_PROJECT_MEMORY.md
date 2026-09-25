@@ -25,14 +25,19 @@ Local agent on Vivo X300 (12 GB, Dimensity 9500): RikkaHub → AICore (ML Kit Pr
   `data/ai/net/GuardedDns.kt` (SSRF), `workspace/.../WorkspaceFileSystem.kt` (confinement)
 
 ## Testing without Android build
-Google Maven (dl.google.com) is blocked in the cloud sandbox → no AGP/Gradle build there.
-`scripts/host-test/run.sh` compiles the Android-free sources with a standalone kotlinc and runs
-114 JUnit tests + a scenario driver that runs the real `AICoreProvider.streamText` against a
-scripted **fake** ML Kit (`scripts/host-test/stubs`, shape only, not the real AAR).
+Google Maven (dl.google.com) and Foojay are blocked in the cloud sandbox → no AGP/Gradle build there.
+`scripts/host-test/run.sh` compiles the Android-free sources with a standalone kotlinc 2.4.10 and runs
+131 JUnit tests + two scenario drivers against a scripted **fake** ML Kit (`scripts/host-test/stubs`,
+shape only, not the real AAR): `AICoreProviderScenario` (streaming/continuation) and
+`AgentContextScenario` (agent loop around the real provider + tool-output store).
+If GitHub is blocked, run.sh assembles kotlinc from Maven jars; Central 429 → Google mirror.
 On a dev machine the same JUnit tests run with `./gradlew :ai:testDebugUnitTest :workspace:testDebugUnitTest :app:testDebugUnitTest`.
 The repo has no CI.
 
-## Android build (details: BUILD_ANDROID.md) — NOT yet performed anywhere
+## Android build (details: BUILD_ANDROID.md)
+[CONFIRMED, Dell 2026-09-25] `./gradlew :app:testDebugUnitTest` on sweet-euler @2b8f819 compiles and
+runs: 1732 tests, 1 failed (FastPathRouter storage format: JVM locale it_IT → "16,0 GB"; fixed with
+`Locale.ROOT`, see Sprint 5). `assembleDebug` / install: not reported yet.
 `:app`, variant debug, `git submodule update --init --recursive && ./gradlew :app:assembleDebug`
 → `app/build/outputs/apk/debug/app-arm64-v8a-debug.apk` (package `excp.rikkahub.debug`).
 Gradle 9.5.0, AGP 9.3.1, Kotlin 2.4.10, compileSdk/targetSdk 37, minSdk 26, Java target 17,
@@ -227,12 +232,45 @@ sub-agent asking it to `web_fetch` a marker URL without a parent grant → expec
 `not_authorised_for_this_run`; with "Allow for this chat" on web_fetch in the parent → runs;
 cron job calling `eval_javascript` → Denied `requires_human_approval`.
 
+## Sprint 5 (2026-09-25) — context virtualization (HOST ONLY: app/ changes not compiled here)
+Goal: long tasks under the ~4k-token AICore window without losing data or looping.
+- [CONFIRMED→MITIGATED] Dropped steps left only `[earlier steps omitted]`: the model could not
+  tell what it had already done. Host scenario C (45 dirs × 5 KB, scripted model that uses only
+  its prompt) with the old prompt: dir_1..15 re-scanned 5-6× each, 80-step cap, no answer.
+  Now a **step ledger** replaces the gap: runs of one tool collapse to one line
+  (`- list_dir x17: dir_1, …, dir_17 -> 17 ok`), singles show args/outcome/`[id=…]`, errors and
+  denials are labelled, the model's own notes during the task are kept (`- (your note) …`).
+  Reserve ≤ min(15% budget, 360 tok); key lists clipped only when they do not fit. Same
+  scenario: 46 requests, no repeats, finding from 28 steps earlier reported.
+- [CONFIRMED→MITIGATED] Clipped middles of tool results were unrecoverable (scenario B: needle in
+  a 20 KB result → "not found"). Now the cut marker says
+  `[N chars cut; read_tool_output id=<call> offset=<where the cut starts>]`.
+- New runtime tool `read_tool_output(id*, offset, query)` (`ToolOutputTools.kt`): pages of 1500
+  chars or line search with offsets. Injected by GenerationLoop only when a result > 400 chars
+  exists; always listed first in the AICore tool list. Needs no approval (read-only). Bound to
+  the call ids of the current request's messages → another chat's / sub-agent's ids refused.
+- [CONFIRMED→MITIGATED] Spill (> 32 KB) happened only with workspace_shell; otherwise 32 KB+
+  went inline to every provider. Now always spilled to private `files/tool_output_store`
+  (PathSafetyGuard-blocked, not shell-mounted, wiped at app start); shell copy in
+  `/tool_outputs` only for chats with the shell, as before. After an app restart the model is
+  told the full text is gone (preview only). If the store write fails the output stays inline.
+- [CONFIRMED, pre-existing, not changed] `files/tool_outputs` (shell copies, all chats) is
+  readable by file tools and by any chat's shell: Sprint 1 kept it as a "working area" on
+  purpose. [REQUIRES PRODUCT DECISION] per-conversation subdirs or block it like the store.
+- FastPathRouter storage line formatted with `Locale.ROOT` (English sentence; it_IT gave "16,0").
+
+Dell: `./gradlew :ai:testDebugUnitTest :app:testDebugUnitTest` — first compile of GenerationLoop,
+FilesManager, RikkaHubApp, PathSafetyGuard edits and of ToolOutputToolsTest.
+Vivo: (a) ask for a value inside a > 32 KB tool output → expect read_tool_output with query,
+no approval card; (b) 20+ step task → logcat `prompt round=… dropped=…` and the model does not
+repeat steps; (c) after app restart, reading an old spilled id → "no longer stored" note.
+
 ## Next steps (priority order)
-1. Build + Vivo checklist above; record results here.
+1. Build (`assembleDebug`) + Vivo checklist above (incl. Sprint 5); record results here.
 2. Use `countTokens`/`getTokenLimit` for exact budgeting once the API is checked against the AAR.
 3. Click-to-load for remote markdown images (egress).
 4. Measure E4B tool-call accuracy with arg names vs without; decide on the "never verify" rule.
-5. Persistent task state for AICore (goal + done steps + last result) so a dropped history
-   still carries progress — only if step 5 of the checklist shows the model losing track.
+5. Task state: the Sprint 5 ledger covers "what was done"; if E4B still loses track on the
+   Vivo, add an explicit pinned plan/progress block (model-maintained) before anything heavier.
 6. Check upstream ExTV/rikkahub-agent and rikkahub/rikkahub for new commits (this fork was
    level with ExTV on 2026-09-24).

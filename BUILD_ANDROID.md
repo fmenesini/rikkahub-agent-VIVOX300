@@ -1,7 +1,8 @@
 # Android build — Dell / Kubuntu
 
-Debug APK for the Vivo X300. Values read from the build files on 2026-09-25; the build
-itself has **not** been run yet (the cloud sandbox cannot reach dl.google.com).
+Debug APK for the Vivo X300. Values read from the build files on 2026-09-25. On the Dell,
+`:app:testDebugUnitTest` has compiled and run (1732 tests); `assembleDebug` not reported yet
+(the cloud sandbox cannot reach dl.google.com, so it cannot build at all).
 
 ## Project facts
 | Item | Value | Source |
@@ -46,6 +47,9 @@ adb install -r app/build/outputs/apk/debug/app-arm64-v8a-debug.apk
 
 ## Checks after the first build
 - Unit tests: `./gradlew :ai:testDebugUnitTest :workspace:testDebugUnitTest :app:testDebugUnitTest`
+  (also with `JAVA_TOOL_OPTIONS="-Duser.language=it -Duser.country=IT"`: formatting must not
+  depend on the machine locale)
+- No Android SDK at hand: `bash scripts/host-test/run.sh` (pure-Kotlin subset + scenarios)
 - First real compile of sprint-1 code. Only symbol verified on docs alone:
   `Candidate.FinishReason.MAX_TOKENS` in `ai/.../providers/AICoreProvider.kt`. If it does not
   resolve, look up the MAX_TOKENS constant in the `genai-prompt` 1.0.0-beta2 AAR and fix that line.
