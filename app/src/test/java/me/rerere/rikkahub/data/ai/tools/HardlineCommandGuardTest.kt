@@ -27,6 +27,24 @@ class HardlineCommandGuardTest {
         }
     }
 
+    @Test fun `rm -rf shared storage root and standard user folders`() {
+        for (root in listOf("/sdcard", "/storage/emulated/0", "/storage/emulated", "/storage/self/primary", "/mnt/sdcard")) {
+            assertBlocked("rm -rf $root")
+            assertBlocked("rm -rf $root/")
+            assertBlocked("rm -rf $root/*")
+            assertBlocked("rm -rf $root/DCIM")
+            assertBlocked("rm -rf $root/Pictures/")
+            assertBlocked("sh -c 'rm -rf $root/Download'")
+        }
+    }
+
+    @Test fun `rm inside shared storage subfolders is left to approval`() {
+        assertAllowed("rm -rf /sdcard/Download/old.zip")
+        assertAllowed("rm -rf /sdcard/DCIM/.thumbnails")
+        assertAllowed("rm -rf /storage/emulated/0/Documents/tmp")
+        assertAllowed("rm -rf /sdcard_backup")
+    }
+
     @Test fun `rm -rf home dir via tilde or var`() {
         assertBlocked("rm -rf ~")
         assertBlocked("rm -rf ~/")
