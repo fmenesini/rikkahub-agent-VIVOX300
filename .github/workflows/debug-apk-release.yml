@@ -1,10 +1,12 @@
-# Builds the debug APK and publishes it as a prerelease. Runs only when a tag starting with
-# "apk-" is pushed (or by hand), so ordinary pushes cost nothing. The APK is debug-signed:
-# for testing on the Vivo X300, not for distribution.
+# Builds the debug APK and publishes it as a prerelease. Runs on a push to a claude/* branch
+# whose head commit message contains "[release-apk]" (agent sessions may push branches but
+# not tags), on a pushed "apk-*" tag, or by hand. Other pushes skip the job at once.
+# The APK is debug-signed: for testing on the Vivo X300, not for distribution.
 name: Debug APK release
 
 on:
   push:
+    branches: ["claude/**"]
     tags: ["apk-*"]
   workflow_dispatch:
 
@@ -13,6 +15,9 @@ permissions:
 
 jobs:
   build:
+    if: >-
+      github.ref_type == 'tag' || github.event_name == 'workflow_dispatch' ||
+      contains(github.event.head_commit.message, '[release-apk]')
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -52,7 +57,7 @@ jobs:
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"
-          if [ "${GITHUB_REF_TYPE}" != "tag" ]; then tag="apk-manual-${GITHUB_RUN_NUMBER}"; fi
+          if [ "${GITHUB_REF_TYPE}" != "tag" ]; then tag="apk-${GITHUB_SHA::7}-run${GITHUB_RUN_NUMBER}"; fi
           dir=app/build/outputs/apk/debug
           arm="rikkahub-agent-${tag}-arm64-v8a-debug.apk"
           cp "$dir/app-arm64-v8a-debug.apk" "$arm"
