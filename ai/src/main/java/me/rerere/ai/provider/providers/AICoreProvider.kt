@@ -6,7 +6,9 @@ import android.content.Intent
 import android.os.Process
 import android.util.Log
 import kotlinx.coroutines.delay
+import kotlin.coroutines.cancellation.CancellationException
 import com.google.mlkit.genai.common.FeatureStatus
+import com.google.mlkit.genai.prompt.Candidate
 import com.google.mlkit.genai.prompt.Generation
 import com.google.mlkit.genai.prompt.GenerativeModel
 import com.google.mlkit.genai.prompt.ModelPreference
@@ -32,20 +34,20 @@ import me.rerere.ai.provider.TextGenerationParams
 import me.rerere.ai.provider.TextGenerationResult
 import me.rerere.ai.ui.ImageGenerationItem
 import me.rerere.ai.ui.StreamChunk
+import me.rerere.ai.ui.StreamChunkHandler
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
 
 private const val TAG = "AICoreProvider"
 
 /**
- * On-device LLM provider backed by Google's AICore (Gemini Nano) via the ML Kit GenAI prompt
- * API. Stateless — every inference call resolves a fresh GenerativeModel client and lets ML
- * Kit handle caching internally. The user-visible install state ("downloadable / downloading
- * / available / unavailable") is exposed via [checkStatus] and consumed by the settings UI.
+ * On-device LLM provider backed by Google's AICore (Gemini Nano / Gemma 4 E2B-E4B on the
+ * Developer Preview) via the ML Kit GenAI prompt API. Stateless — every inference call
+ * resolves a fresh GenerativeModel client. The install state is exposed via [checkStatus].
  *
- * Tool-calling is not wired through yet; ML Kit GenAI 1.0.0-beta2 documents function calling
- * but the surface is in flux. First cut runs prompt-only inference; tools fall through to
- * being ignored.
+ * The prompt API has no native tool calling, a ~4k-token input limit and a 256-token output
+ * cap, so prompt assembly, the `<tool_call>` text protocol and MAX_TOKENS continuation live
+ * in AICorePrompt.kt (host-testable, see scripts/host-test).
  */
 class AICoreProvider(private val context: Context) : Provider<ProviderSetting.AICore> {
 
@@ -73,6 +75,7 @@ class AICoreProvider(private val context: Context) : Provider<ProviderSetting.AI
             val status: Int = try {
                 generativeModel.checkStatus()
             } catch (t: Throwable) {
+                if (t is CancellationException) throw t
                 Log.w(TAG, "checkStatus threw", t)
                 error(translateAICoreError(t))
             }
@@ -82,27 +85,15 @@ class AICoreProvider(private val context: Context) : Provider<ProviderSetting.AI
             try {
                 generativeModel.warmup()
             } catch (t: Throwable) {
+                if (t is CancellationException) throw t
                 Log.w(TAG, "warmup threw", t)
                 error(translateAICoreError(t))
             }
 
-            // Gemini Nano has a small context window (~4k tokens). The full agent-core skill
-            // bundle (~3k tokens of voice/posture/tool docs) used by the cloud providers
-            // overflows it, so we build a MINI version specifically for AICore: terse tool
-            // descriptions, no skill prose, no examples. Cloud providers continue to use the
-            // full agent-core via the assistant's enabledSkills.
-            val systemPrefix = buildAiCoreMiniSystemPrefix(params.tools)
-            val prompt = formatPromptFromMessages(truncateForAiCore(messages))
             val temperature = (params.temperature ?: 0.7f).coerceIn(0f, 1f)
-            val request = generateContentRequest(TextPart(prompt)) {
-                this.temperature = temperature
-                if (systemPrefix.isNotBlank()) {
-                    this.promptPrefix = PromptPrefix(systemPrefix)
-                }
-                params.topP?.let { /* topP not exposed in ML Kit GenAI prompt API */ }
-            }
-
             val streamId = "aicore-${System.currentTimeMillis()}"
+            // One parser for all rounds: a tool call cut by the output cap resumes in the
+            // continuation round instead of being lost.
             val parser = ToolTagParser(params.tools)
             var textId: String? = null
             val openToolIds = linkedSetOf<String>()
@@ -133,45 +124,76 @@ class AICoreProvider(private val context: Context) : Provider<ProviderSetting.AI
                 }
             }
 
-            suspend fun FlowCollector<StreamChunk>.closeOpenParts() {
-                textId?.let {
-                    emit(StreamChunk.TextEnd(it))
-                    textId = null
+            // ML Kit caps every request at 256 output tokens and the input at ~4k, so the
+            // prompt is rebuilt within budget each round (see buildAiCorePrompt) and an
+            // answer cut by MAX_TOKENS is continued with the text generated so far as
+            // prefill. Continuation stops as soon as a tool call is out.
+            val generated = StringBuilder()
+            var tokenBudget = AICORE_INPUT_TOKEN_BUDGET
+            var overflowRetried = false
+            var round = 0
+            while (true) {
+                val built = buildAiCorePrompt(messages, params.tools, tokenBudget, prefill = generated.toString())
+                Log.i(
+                    TAG,
+                    "prompt round=$round est=${built.estimatedTokens}tok prefix=${built.systemPrefix.length}ch " +
+                        "prompt=${built.prompt.length}ch tools=${built.toolsShown}/${built.toolsTotal} " +
+                        "dropped=${built.droppedUnits}",
+                )
+                val request = generateContentRequest(TextPart(built.prompt)) {
+                    this.temperature = temperature
+                    if (built.systemPrefix.isNotBlank()) {
+                        this.promptPrefix = PromptPrefix(built.systemPrefix)
+                    }
                 }
-                openToolIds.toList().forEach { emit(StreamChunk.ToolCallEnd(it)) }
-                openToolIds.clear()
-            }
+                val joiner = ContinuationJoiner(generated.toString())
+                val generatedBefore = generated.length
+                var hitMaxTokens = false
+                try {
+                    generativeModel.generateContentStream(request).collect { response ->
+                        val candidate = response.candidates.firstOrNull()
+                        val delta = joiner.feed(candidate?.text.orEmpty())
+                        generated.append(delta)
+                        emitParts(parser.feed(delta))
+                        if (candidate?.finishReason == Candidate.FinishReason.MAX_TOKENS) {
+                            hitMaxTokens = true
+                        }
+                    }
+                } catch (t: Throwable) {
+                    if (t is CancellationException) throw t
+                    // Nothing generated yet and the error looks like an input overflow: the
+                    // char-based estimate was too optimistic for this text. Retrying with a
+                    // smaller budget cannot repeat any side effect.
+                    if (!overflowRetried && generated.length == generatedBefore && looksLikeAiCoreInputOverflow(t)) {
+                        Log.w(TAG, "input overflow at est=${built.estimatedTokens}tok, retrying smaller", t)
+                        overflowRetried = true
+                        tokenBudget = tokenBudget * 6 / 10
+                        continue
+                    }
+                    Log.w(TAG, "generateContentStream threw", t)
+                    error(translateAICoreError(t))
+                }
+                val held = joiner.finish()
+                generated.append(held)
+                emitParts(parser.feed(held))
 
-            try {
-                generativeModel.generateContentStream(request).collect { response ->
-                    val candidate = response.candidates.firstOrNull()
-                    val rawDelta = candidate?.text.orEmpty()
-                    val rawFinish = candidate?.finishReason?.toString()
-                    val parts = parser.feed(rawDelta)
-                    if (parts.isNotEmpty()) {
-                        emitParts(parts)
-                    } else if (rawFinish != null) {
-                        // No content in this chunk but stream closed. Flush any partial buffer
-                        // as text so it isn't dropped.
-                        emitParts(parser.flushPending())
-                    }
-                    if (rawFinish != null) {
-                        closeOpenParts()
-                        // If a tool tag was closed in this delta, signal tool_calls so the
-                        // GenerationHandler dispatches the tool and resumes the conversation.
-                        // Otherwise pass through whatever the model declared (usually null).
-                        emit(
-                            StreamChunk.Finish(
-                                finishReason = parser.consumePendingFinishReason() ?: rawFinish,
-                                responseId = streamId,
-                                model = params.model.modelId,
-                            )
-                        )
-                    }
+                if (shouldContinueAiCore(hitMaxTokens, parser.emittedToolCall, round)) {
+                    round++
+                    Log.i(TAG, "MAX_TOKENS at ${generated.length}ch, continuation round $round")
+                    continue
                 }
-            } catch (t: Throwable) {
-                Log.w(TAG, "generateContentStream threw", t)
-                error(translateAICoreError(t))
+                // Always flush: the parser holds back up to 10 chars that could start a tag.
+                emitParts(parser.flushPending())
+                textId?.let { emit(StreamChunk.TextEnd(it)) }
+                openToolIds.forEach { emit(StreamChunk.ToolCallEnd(it)) }
+                emit(
+                    StreamChunk.Finish(
+                        finishReason = aiCoreFinishReason(hitMaxTokens, parser.emittedToolCall),
+                        responseId = streamId,
+                        model = params.model.modelId,
+                    )
+                )
+                break
             }
         } finally {
             try { generativeModel.close() } catch (t: Throwable) {
@@ -187,21 +209,22 @@ class AICoreProvider(private val context: Context) : Provider<ProviderSetting.AI
         messages: List<UIMessage>,
         params: TextGenerationParams,
     ): TextGenerationResult {
-        val collected = StringBuilder()
+        // Merge through StreamChunkHandler so tool calls survive non-streaming mode too;
+        // collecting only TextDelta silently dropped every AICore tool call.
+        val handler = StreamChunkHandler()
+        var merged = listOf(UIMessage(role = MessageRole.USER, parts = emptyList()))
         var finishReason: String? = null
         streamText(providerSetting, messages, params).collect { chunk ->
-            when (chunk) {
-                is StreamChunk.TextDelta -> collected.append(chunk.text)
-                is StreamChunk.Finish -> chunk.finishReason?.let { finishReason = it }
-                else -> Unit
-            }
+            if (chunk is StreamChunk.Finish) chunk.finishReason?.let { finishReason = it }
+            merged = handler.handle(merged, chunk)
         }
+        val reply = merged.last().takeIf { it.role == MessageRole.ASSISTANT }
         return TextGenerationResult(
             id = "aicore-${System.currentTimeMillis()}",
             model = params.model.modelId,
             message = UIMessage(
                 role = MessageRole.ASSISTANT,
-                parts = listOf(UIMessagePart.Text(collected.toString())),
+                parts = reply?.parts.orEmpty(),
             ),
             finishReason = finishReason ?: "stop",
         )
@@ -257,7 +280,7 @@ class AICoreProvider(private val context: Context) : Provider<ProviderSetting.AI
 
     private fun unavailableMessage(status: Int): String = when (status) {
         FeatureStatus.UNAVAILABLE ->
-            "AICore is not available on this device. Pixel 8/9/10 with AICore beta required."
+            "AICore is not available on this device (needs an AICore-supported phone and the AICore beta / Developer Preview)."
         FeatureStatus.DOWNLOADABLE ->
             "AICore model not downloaded yet. Open Settings → Providers → AICore → Prepare model."
         FeatureStatus.DOWNLOADING ->

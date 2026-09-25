@@ -35,13 +35,19 @@ trap 'rm -rf "$OUT"' EXIT
 # Pure sources only: everything listed here must stay free of android.* / ML Kit imports.
 SRC=(
   "$A"/ui/*.kt "$A"/core/*.kt "$A"/provider/Model.kt "$A"/provider/Provider.kt "$A"/util/Json.kt
-  "$A"/provider/providers/AICorePrompt.kt
-  "$ROOT"/scripts/host-test/stubs/*.kt
+  "$A"/provider/providers/AICorePrompt.kt "$A"/provider/providers/AICoreProvider.kt
+  "$ROOT"/scripts/host-test/stubs/*.kt   # fake android.* / ML Kit surface
+  "$ROOT"/scripts/host-test/AICoreProviderScenario.kt
 )
 TESTS=( "$T"/provider/providers/AICorePromptTest.kt )
 
 "$K/bin/kotlinc" -nowarn -Xplugin="$K/lib/kotlinx-serialization-compiler-plugin.jar" \
   -cp "$CP" -d "$OUT" "${SRC[@]}" "${TESTS[@]}" 2>&1 | grep -v '^Picked up JAVA_TOOL_OPTIONS' || true
 [ -n "$(find "$OUT" -name 'AICorePromptTest*.class' -print -quit)" ] || { echo "compile failed"; exit 1; }
-java -cp "$OUT:$CP:$K/lib/kotlin-stdlib.jar" org.junit.runner.JUnitCore \
-  me.rerere.ai.provider.providers.AICorePromptTest 2>&1 | grep -v '^Picked up JAVA_TOOL_OPTIONS'
+RUN=(java -cp "$OUT:$CP:$K/lib/kotlin-stdlib.jar")
+"${RUN[@]}" org.junit.runner.JUnitCore me.rerere.ai.provider.providers.AICorePromptTest 2>&1 \
+  | grep -v '^Picked up JAVA_TOOL_OPTIONS' | tee "$OUT/junit.log"
+grep -q '^OK (' "$OUT/junit.log"
+# Drives the real AICoreProvider.streamText against a scripted fake GenerativeModel.
+"${RUN[@]}" AICoreProviderScenarioKt 2>&1 | grep -v '^Picked up JAVA_TOOL_OPTIONS' | tee "$OUT/scenario.log"
+grep -q '^ALL PASS' "$OUT/scenario.log"
