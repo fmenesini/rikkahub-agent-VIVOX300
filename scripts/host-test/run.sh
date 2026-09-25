@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Runs the Android-free unit tests of the :ai module on a plain JVM, without Gradle/AGP.
+# Runs the Android-free unit tests (ai, workspace and selected app guards) on a plain JVM,
+# without Gradle/AGP, plus a scenario driver for AICoreProvider against a fake ML Kit.
 # Use it where Google Maven is unreachable (e.g. sandboxed CI/agent containers). On a normal
 # dev machine prefer: ./gradlew :ai:testDebugUnitTest
 set -euo pipefail
