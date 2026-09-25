@@ -1,5 +1,7 @@
 package me.rerere.rikkahub.data.ai.tools
 
+import me.rerere.ai.core.Tool
+
 /**
  * Single source of truth for which tools require user approval before they execute.
  *
@@ -315,4 +317,13 @@ object ToolApprovalDefaults {
      */
     fun requiresApproval(toolName: String): Boolean =
         toolName in ALWAYS_ASK || toolName.startsWith("mcp__")
+
+    /**
+     * Makes [tool] honour this policy. Every factory whose tools can land in [ALWAYS_ASK]
+     * must pass them through here: the loop only prompts when `needsApproval` returns true,
+     * so a name in the set is not enforced by itself (scrape_web, built outside LocalTools,
+     * was listed but still ran unprompted).
+     */
+    fun applyTo(tool: Tool): Tool =
+        if (requiresApproval(tool.name)) tool.copy(needsApproval = { true }) else tool
 }

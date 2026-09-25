@@ -29,4 +29,13 @@ class ToolApprovalDefaultsTest {
             assertTrue("$name must be approval-gated", ToolApprovalDefaults.requiresApproval(name))
         }
     }
+
+    @Test
+    fun `applyTo turns set membership into an enforced needsApproval`() {
+        val args = kotlinx.serialization.json.JsonObject(emptyMap())
+        fun tool(name: String) = me.rerere.ai.core.Tool(name = name, description = "", execute = { emptyList() })
+        assertTrue(ToolApprovalDefaults.applyTo(tool("scrape_web")).needsApproval(args))
+        assertTrue(ToolApprovalDefaults.applyTo(tool("mcp__srv__x")).needsApproval(args))
+        assertTrue(!ToolApprovalDefaults.applyTo(tool("search_web")).needsApproval(args))
+    }
 }
