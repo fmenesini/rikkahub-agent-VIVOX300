@@ -27,7 +27,7 @@ Local agent on Vivo X300 (12 GB, Dimensity 9500): RikkaHub → AICore (ML Kit Pr
 ## Testing without Android build
 Google Maven (dl.google.com) is blocked in the cloud sandbox → no AGP/Gradle build there.
 `scripts/host-test/run.sh` compiles the Android-free sources with a standalone kotlinc and runs
-102 JUnit tests + a scenario driver that runs the real `AICoreProvider.streamText` against a
+114 JUnit tests + a scenario driver that runs the real `AICoreProvider.streamText` against a
 scripted **fake** ML Kit (`scripts/host-test/stubs`, shape only, not the real AAR).
 On a dev machine the same JUnit tests run with `./gradlew :ai:testDebugUnitTest :workspace:testDebugUnitTest :app:testDebugUnitTest`.
 The repo has no CI.
@@ -189,6 +189,43 @@ Proposed minimal policy, not implemented:
 
 Dell/Vivo checks added by Sprint 3: `./gradlew :app:testDebugUnitTest --tests '*SearchToolsTest*'`;
 on device, `scrape_web` and `list_recent_notifications` must show an approval card.
+
+## Sprint 4 (2026-09-25) — privilege boundaries (static + host tests, HOST ONLY)
+Fix 01edfe9: one approval policy, `ToolApprovalDefaults.autoApproves` + `decide`, executed by
+`GenerationLoop` per tool (after Hardline), with `RunKind` from `HeadlessConversations.runKind`:
+| RunKind | who | gated tool not granted | NO_ALWAYS_ALLOW | memory_tool |
+|---|---|---|---|---|
+| INTERACTIVE | chat, Telegram | Prompt | Prompt every call (no YOLO/chat/always) | runs (ungated) |
+| UNATTENDED | cron, external automation, skill tester | Run (auto) | Deny | Deny |
+| DELEGATED | sub-agent (`markDelegated`) | Deny unless parent-chat grant / Always / YOLO | Deny | Deny |
+Workflows and cron direct mode call `execute` directly (pre-authorised fixed actions): unchanged.
+
+- [MITIGATED] Sub-agent approval laundering (Sprint 3): the sub-agent now inherits only its
+  parent chat's grants. Evidence: ToolApprovalPolicyTest (decision matrix), HeadlessRunKindTest
+  (real `HeadlessConversations` on host stubs). Wiring in ChatService/GenerationLoop/SubAgentEngine
+  is not compiled here.
+- [MITIGATED] NO_ALWAYS_ALLOW now enforced at runtime on every path (was UI-only). UI still shows
+  "Allow for this chat" for these tools: it approves that one call only (cosmetic, not fixed).
+- [FALSIFIED] sub-agent → sub-agent and cron → sub-agent: recursion guard rejects (`no_recursion`);
+  ChatService passes the invocation context, so the guard is live on the main path.
+- [CONFIRMED, not fixed] `subagent_dispatch` `tools` argument is stored, never enforced (the
+  approval card suggests a scope that does not exist). With inherited grants it no longer widens
+  privilege, but it is misleading. [REQUIRES PRODUCT DECISION]: enforce as allowlist or drop it.
+- [CONFIRMED, not fixed] Interactive memory persistence: injected content → `memory_tool` (ungated)
+  → `buildMemoryPrompt` puts memories in the system prompt of future chats, unframed.
+  Does not reach AICore (AICorePrompt drops SYSTEM messages); reaches every cloud provider.
+  [REQUIRES PRODUCT DECISION]: gate writes (ALWAYS_ASK, user may Always-Allow) or visible
+  "memory changed" notice + frame memories as data. Blocked already in unattended/sub-agent runs.
+- [CONFIRMED, not fixed] UNATTENDED runs still auto-approve egress (web_fetch, scrape_web,
+  browser_open, telegram_send_*, ssh_*, mcp__*) and sensitive reads: a cron job that processes
+  untrusted content can still chain notifications → network. [REQUIRES PRODUCT DECISION]:
+  per-job tool allowlist at job creation (the workflow model).
+- Grants are per tool name and per chat: approving a local read never authorises an egress tool.
+
+Dell: `./gradlew :app:testDebugUnitTest` (first compile of 01edfe9). Vivo/Android: dispatch a
+sub-agent asking it to `web_fetch` a marker URL without a parent grant → expect Denied
+`not_authorised_for_this_run`; with "Allow for this chat" on web_fetch in the parent → runs;
+cron job calling `eval_javascript` → Denied `requires_human_approval`.
 
 ## Next steps (priority order)
 1. Build + Vivo checklist above; record results here.
