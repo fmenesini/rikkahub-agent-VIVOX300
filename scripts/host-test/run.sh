@@ -46,7 +46,7 @@ W="$ROOT/workspace/src/main/java/me/rerere/workspace"
 SRC+=( "$W"/WorkspaceFileSystem.kt "$W"/SafeFiles.kt "$W"/Workspace.kt )
 APP="$ROOT/app/src/main/java/me/rerere/rikkahub"
 APPT="$ROOT/app/src/test/java/me/rerere/rikkahub"
-SRC+=( "$APP"/data/ai/tools/local/PathSafetyGuard.kt "$APP"/data/ai/net/GuardedDns.kt "$APP"/data/ai/tools/HardlineCommandGuard.kt )
+SRC+=( "$APP"/data/ai/tools/local/PathSafetyGuard.kt "$APP"/data/ai/net/GuardedDns.kt "$APP"/data/ai/tools/HardlineCommandGuard.kt "$APP"/data/ai/tools/ToolApprovalDefaults.kt )
 TESTS=(
   "$T"/provider/providers/AICorePromptTest.kt
   "$ROOT"/workspace/src/test/java/me/rerere/workspace/WorkspaceSymlinkEscapeTest.kt
@@ -55,6 +55,7 @@ TESTS=(
   "$APPT"/data/ai/net/GuardedDnsTest.kt
   "$APPT"/data/ai/net/BrowserTargetGuardTest.kt
   "$APPT"/data/ai/tools/HardlineCommandGuardTest.kt
+  "$APPT"/data/ai/tools/ToolApprovalDefaultsTest.kt
 )
 
 "$K/bin/kotlinc" -nowarn -Xplugin="$K/lib/kotlinx-serialization-compiler-plugin.jar" \
@@ -67,7 +68,8 @@ RUN=(java -cp "$OUT:$CP:$K/lib/kotlin-stdlib.jar")
   me.rerere.rikkahub.data.ai.tools.local.PathSafetyGuardDevicePathsTest \
   me.rerere.rikkahub.data.ai.net.GuardedDnsTest \
   me.rerere.rikkahub.data.ai.net.BrowserTargetGuardTest \
-  me.rerere.rikkahub.data.ai.tools.HardlineCommandGuardTest 2>&1 \
+  me.rerere.rikkahub.data.ai.tools.HardlineCommandGuardTest \
+  me.rerere.rikkahub.data.ai.tools.ToolApprovalDefaultsTest 2>&1 \
   | grep -v '^Picked up JAVA_TOOL_OPTIONS' | tee "$OUT/junit.log"
 grep -q '^OK (' "$OUT/junit.log"
 # Drives the real AICoreProvider.streamText against a scripted fake GenerativeModel.
