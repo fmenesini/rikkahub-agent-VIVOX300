@@ -20,7 +20,9 @@ for a in \
   org/jetbrains/kotlinx/kotlinx-datetime-jvm/0.8.0/kotlinx-datetime-jvm-0.8.0.jar \
   org/jetbrains/kotlinx/kotlinx-coroutines-core-jvm/1.11.0/kotlinx-coroutines-core-jvm-1.11.0.jar \
   junit/junit/4.13.2/junit-4.13.2.jar \
-  org/hamcrest/hamcrest-core/1.3/hamcrest-core-1.3.jar; do
+  org/hamcrest/hamcrest-core/1.3/hamcrest-core-1.3.jar \
+  com/squareup/okhttp3/okhttp-jvm/5.5.0/okhttp-jvm-5.5.0.jar \
+  com/squareup/okio/okio-jvm/3.18.1/okio-jvm-3.18.1.jar; do
   f="$CACHE/libs/$(basename "$a")"
   [ -f "$f" ] || curl -sSfL --retry 4 --retry-delay 2 -o "$f" "$MVN/$a"
 done
@@ -43,12 +45,14 @@ W="$ROOT/workspace/src/main/java/me/rerere/workspace"
 SRC+=( "$W"/WorkspaceFileSystem.kt "$W"/SafeFiles.kt "$W"/Workspace.kt )
 APP="$ROOT/app/src/main/java/me/rerere/rikkahub"
 APPT="$ROOT/app/src/test/java/me/rerere/rikkahub"
-SRC+=( "$APP"/data/ai/tools/local/PathSafetyGuard.kt )
+SRC+=( "$APP"/data/ai/tools/local/PathSafetyGuard.kt "$APP"/data/ai/net/GuardedDns.kt )
 TESTS=(
   "$T"/provider/providers/AICorePromptTest.kt
   "$ROOT"/workspace/src/test/java/me/rerere/workspace/WorkspaceSymlinkEscapeTest.kt
   "$APPT"/data/ai/tools/local/PathSafetyGuardTest.kt
   "$APPT"/data/ai/tools/local/PathSafetyGuardDevicePathsTest.kt
+  "$APPT"/data/ai/net/GuardedDnsTest.kt
+  "$APPT"/data/ai/net/BrowserTargetGuardTest.kt
 )
 
 "$K/bin/kotlinc" -nowarn -Xplugin="$K/lib/kotlinx-serialization-compiler-plugin.jar" \
@@ -58,7 +62,9 @@ RUN=(java -cp "$OUT:$CP:$K/lib/kotlin-stdlib.jar")
 "${RUN[@]}" org.junit.runner.JUnitCore me.rerere.ai.provider.providers.AICorePromptTest \
   me.rerere.workspace.WorkspaceSymlinkEscapeTest \
   me.rerere.rikkahub.data.ai.tools.local.PathSafetyGuardTest \
-  me.rerere.rikkahub.data.ai.tools.local.PathSafetyGuardDevicePathsTest 2>&1 \
+  me.rerere.rikkahub.data.ai.tools.local.PathSafetyGuardDevicePathsTest \
+  me.rerere.rikkahub.data.ai.net.GuardedDnsTest \
+  me.rerere.rikkahub.data.ai.net.BrowserTargetGuardTest 2>&1 \
   | grep -v '^Picked up JAVA_TOOL_OPTIONS' | tee "$OUT/junit.log"
 grep -q '^OK (' "$OUT/junit.log"
 # Drives the real AICoreProvider.streamText against a scripted fake GenerativeModel.

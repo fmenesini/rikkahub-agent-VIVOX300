@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import me.rerere.rikkahub.data.ai.net.browserTargetBlockReason
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -193,12 +194,22 @@ fun browserOpenTool(context: Context, invocationContext: ToolInvocationContext? 
         // javascript:, intent: etc. are therefore rejected at the tool boundary.
         // Scheme-less input is passed through unchanged (pre-existing behaviour).
         val scheme = url?.let { android.net.Uri.parse(it.trim()).scheme?.lowercase() }
+        // Local-network floor, same as web_fetch: the model may browse the Internet, not
+        // the user's router, LAN devices or RikkaHub's own local web server.
+        val privateTarget = if (url != null && (scheme == "http" || scheme == "https")) {
+            withContext(Dispatchers.IO) { browserTargetBlockReason(url) }
+        } else null
         val rawOut = if (url == null) {
             missingArgEnvelope("url", "url is required and must be a non-empty string")
         } else if (scheme != null && scheme !in setOf("http", "https", "about")) {
             buildJsonObject {
                 put("error", "scheme_not_allowed")
                 put("detail", "browser_open only accepts http(s) and about: URLs; got scheme '$scheme'")
+            }
+        } else if (privateTarget != null) {
+            buildJsonObject {
+                put("error", "blocked_private_address")
+                put("detail", "$privateTarget. browser_open refuses loopback, private and link-local targets. Use a public URL.")
             }
         } else {
             withTimeoutOrNull(toolTimeoutMs) {

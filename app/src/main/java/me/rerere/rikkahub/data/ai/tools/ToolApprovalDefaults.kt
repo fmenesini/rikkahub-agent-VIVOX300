@@ -222,6 +222,10 @@ object ToolApprovalDefaults {
         // web_extract performs the same outbound GET as web_fetch, so it carries the same
         // trust footprint and inherits the same approval gate.
         "web_extract",
+        // browser_open navigates to a model-chosen URL, so like web_fetch the URL itself can
+        // carry anything in context (…/?d=<contacts>) to any server. It was the one ungated
+        // egress path: a prompt-injected page could chain it without the user seeing a card.
+        "browser_open",
 
         // Phase 25 — Phase 3 second cut. Every mutating tool is approval-gated; the
         // read-only tools (keystore_verify, keystore_list_keys, list_storage_volumes,
