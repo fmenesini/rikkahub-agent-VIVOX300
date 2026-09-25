@@ -26,6 +26,44 @@ internal const val AICORE_INPUT_TOKEN_LIMIT = 4000
 internal const val AICORE_MAX_OUTPUT_TOKENS = 256
 
 /**
+ * Input limit to plan against, given what `GenerativeModel.getTokenLimit()` reported. The
+ * API does not say whether that number includes the output cap, so the output tokens are
+ * set aside, and the result is only ever used to go BELOW the documented limit: raising it
+ * needs a countTokens measurement on the device. [REQUIRES VIVO VALIDATION]
+ */
+internal fun aiCoreInputLimit(reportedTokenLimit: Int?): Int {
+    val reported = reportedTokenLimit?.takeIf { it >= 1024 } ?: return AICORE_INPUT_TOKEN_LIMIT
+    return minOf(AICORE_INPUT_TOKEN_LIMIT, reported - AICORE_MAX_OUTPUT_TOKENS)
+}
+
+/** Share of the input limit a counted prompt may use (chat template tokens are not counted). */
+internal const val AICORE_COUNTED_FILL = 0.95
+
+/**
+ * Exact budgeting: given the tokenizer's count for a built prompt, returns the estimate-based
+ * budget to rebuild it with, or null to send it as is. The char estimate is calibrated by the
+ * measured ratio: too big → shrink below the limit; well under it while history was dropped
+ * → grow so more of the task fits. Every rebuilt prompt is counted again by the caller.
+ */
+internal fun calibratedAiCoreBudget(
+    currentBudget: Int,
+    estimatedTokens: Int,
+    countedTokens: Int,
+    inputLimit: Int,
+    droppedUnits: Int,
+): Int? {
+    if (estimatedTokens <= 0 || countedTokens <= 0) return null
+    val target = (inputLimit * AICORE_COUNTED_FILL).toInt()
+    val ratio = countedTokens.toDouble() / estimatedTokens
+    val calibrated = (target / ratio).toInt().coerceAtLeast(256)
+    return when {
+        countedTokens > target -> minOf(calibrated, currentBudget - 1).coerceAtLeast(1)
+        droppedUnits > 0 && countedTokens < target * 0.85 && calibrated > currentBudget * 1.1 -> calibrated
+        else -> null
+    }
+}
+
+/**
  * Char budget for prefix + prompt. The estimate below is conservative, and we keep 10%
  * headroom on top because the chat template adds tokens we cannot see.
  */

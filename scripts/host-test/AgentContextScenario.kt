@@ -52,13 +52,15 @@ fun agent(task: String, baseTools: List<Tool>, maxSteps: Int, policy: (String) -
     val prompts = mutableListOf<String>()
     val calls = mutableListOf<String>()
     var maxTokens = 0
-    FakeAICore.requests.clear(); FakeAICore.script.clear()
+    FakeAICore.requests.clear(); FakeAICore.script.clear(); FakeAICore.responder = null
     repeat(maxSteps) {
         val history = if (parts.isEmpty()) listOf(user) else listOf(user, UIMessage(role = MessageRole.ASSISTANT, parts = parts.toList()))
         val tools = baseTools + if (hasRetrievableToolOutput(history)) listOf(buildReadToolOutputTool(history, dir)) else emptyList()
-        FakeAICore.script += { r ->
+        // Answers every request of this step, including a provider retry after an overflow.
+        FakeAICore.responder = { r ->
             val full = (r.prefix ?: "") + "\n" + r.prompt
-            val tokens = estimateAiCoreTokens(r.prefix ?: "") + estimateAiCoreTokens(r.prompt)
+            // The device tokenizer when the scenario models one, else the provider's estimate.
+            val tokens = FakeAICore.count(r) ?: (estimateAiCoreTokens(r.prefix ?: "") + estimateAiCoreTokens(r.prompt))
             maxTokens = maxOf(maxTokens, tokens)
             prompts += full
             flow {
@@ -157,5 +159,51 @@ fun main() {
         println("   C: ${r.requests} requests, max prompt ${r.maxTokens} est. tokens")
         println("   C last prompt ledger: " + r.prompts.last().substringAfter("[earlier steps omitted]").substringBefore("\nmodel: <tool_call>").lines().take(4).joinToString(" | ").take(400))
     }
+    // D/E. Exact budgeting: the device tokenizer differs from the char estimate. Same 45-step
+    // task; the fake rejects anything over the limit by ITS count, as the real API would.
+    fun scanTask(): Run {
+        val listDir = tool("list_dir", "List a directory") { a ->
+            val d = a["path"]!!.jsonPrimitive.content
+            buildString { for (i in 1..120) append("$d/file_$i.kt ${if (d == "dir_17" && i == 60) "TODO" else "ok"}\n") }
+        }
+        fun seen(p: String, n: Int) = Regex("\\bdir_$n\\b").containsMatchIn(p.substringAfter("\nuser:").substringAfter("\n"))
+        return agent("Scan dir_1 to dir_45 and tell me which one has a TODO", listOf(listDir), 80) { p ->
+            val latest = p.substringAfter("\nuser:").substringAfterLast("<tool_result>", "")
+            val todoDir = Regex("(dir_\\d+)/file_\\d+\\.kt TODO").find(latest)?.groupValues?.get(1)
+            val next = (1..45).firstOrNull { !seen(p, it) }
+            val note = if (todoDir != null) "Note: TODO in $todoDir.\n" else ""
+            when {
+                next != null -> note + call("list_dir", """{"path":"dir_$next"}""")
+                else -> Regex("TODO in (dir_\\d+)").find(p)?.let { "Done: the TODO is in ${it.groupValues[1]}." } ?: "Done, no TODO found."
+            }
+        }
+    }
+    fun resultsKept(p: String) = Regex("<tool_result>").findAll(p.substringAfter("\nuser:")).count()
+    val baseline = scanTask()
+
+    // D. Dense tokenizer (2 chars/token: 1.5x the estimate). Counting keeps every request inside.
+    FakeAICore.reset(); FakeAICore.tokenLimit = 4096; FakeAICore.tokenizer = { (it.length + 1) / 2 }
+    val dense = scanTask()
+    check("D dense tokenizer: task completes", dense.answer == "Done: the TODO is in dir_17.", "${dense.answer}")
+    check("D every request inside the limit by the device count", dense.maxTokens <= AICORE_INPUT_TOKEN_LIMIT, "max=${dense.maxTokens}")
+    check("D prompts were counted", FakeAICore.counts >= dense.requests, "counts=${FakeAICore.counts}")
+
+    // D2. Same tokenizer but countTokens unavailable: the estimate path must still not crash
+    // the task (the overflow retry is the backstop).
+    FakeAICore.reset(); FakeAICore.tokenizer = { (it.length + 1) / 2 }; FakeAICore.countApi = false
+    val blind = scanTask()
+    check("D2 no countTokens: task still completes via overflow retry", blind.answer == "Done: the TODO is in dir_17.", "${blind.answer}")
+
+    // E. Sparse tokenizer (4.5 chars/token): counting lets the budget grow, keeping more steps.
+    FakeAICore.reset(); FakeAICore.tokenLimit = 4096; FakeAICore.tokenizer = { (it.length * 2 + 8) / 9 }
+    val sparse = scanTask()
+    check("E sparse tokenizer: task completes", sparse.answer == "Done: the TODO is in dir_17.", "${sparse.answer}")
+    check("E more history kept than with the estimate alone",
+        resultsKept(sparse.prompts.last()) > resultsKept(baseline.prompts.last()),
+        "sparse=${resultsKept(sparse.prompts.last())} baseline=${resultsKept(baseline.prompts.last())}")
+    check("E still inside the limit by the device count", sparse.maxTokens <= (AICORE_INPUT_TOKEN_LIMIT * 0.95).toInt() + 1, "max=${sparse.maxTokens}")
+    println("   D: ${dense.requests} requests, max ${dense.maxTokens} device tokens; E: kept ${resultsKept(sparse.prompts.last())} results vs ${resultsKept(baseline.prompts.last())}")
+    FakeAICore.reset()
+
     println(if (failures == 0) "ALL PASS" else "$failures FAILED")
 }

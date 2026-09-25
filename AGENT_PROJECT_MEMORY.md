@@ -12,7 +12,9 @@ Local agent on Vivo X300 (12 GB, Dimensity 9500): RikkaHub → AICore (ML Kit Pr
   128K window does NOT apply through AICore. [CONFIRMED doc] [REQUIRES VIVO VALIDATION]
 - `maxOutputTokens` range 1..256, default 256. "Raise MAX_TOKENS" is impossible at the API. [CONFIRMED doc]
 - `Candidate.finishReason` is an Int (`STOP` / `MAX_TOKENS` / `OTHER`), null mid-stream.
-- `GenerativeModel.countTokens()` + `getTokenLimit()` exist — not used yet (signatures unverified).
+- `GenerativeModel.countTokens(GenerateContentRequest): CountTokensResponse(totalTokens: Int)` and
+  `getTokenLimit(): Int` (both suspend) [CONFIRMED from the genai-prompt 1.0.0-beta2 AAR, javap].
+  Also present: `getBaseModelName()`, `getCaches()`/`clearImplicitCaches()` (prefix caching, unused).
 - No native tool calling: tools go through the `<tool_call>{json}</tool_call>` text protocol.
 
 ## Where things are
@@ -264,6 +266,25 @@ FilesManager, RikkaHubApp, PathSafetyGuard edits and of ToolOutputToolsTest.
 Vivo: (a) ask for a value inside a > 32 KB tool output → expect read_tool_output with query,
 no approval card; (b) 20+ step task → logcat `prompt round=… dropped=…` and the model does not
 repeat steps; (c) after app restart, reading an old spilled id → "no longer stored" note.
+
+## Sprint 5b (2026-09-25) — first cloud build, exact token budget
+Cloud env now allows dl.google.com / maven.google.com / foojay. [CONFIRMED] in the sandbox:
+`:ai:testDebugUnitTest` 329/329, `:app:testDebugUnitTest` 1742/1742 (also with it_IT locale for
+FastPathRouter), `:app:assembleDebug` → app-arm64-v8a-debug.apk (105 MB, excp.rikkahub.debug,
+2.5.1/187, debug-signed). Sprint 1's only doc-only symbol (`Candidate.FinishReason.MAX_TOKENS`)
+compiles against the real AAR. Sandbox build recipe: SDK platforms;android-37.0 + cmake 3.22.1,
+`git submodule update --init --recursive`, `LANG=C.UTF-8` (a test name has an em dash),
+`~/.gradle/init.d` init script putting Google's Maven Central mirror first (Central → 429).
+- [MITIGATED] Exact budget in AICoreProvider: `getTokenLimit()` may only LOWER the 4000 input
+  limit (minus the 256 output cap; its meaning is undocumented); every request is
+  `countTokens`-measured before sending and rebuilt with a calibrated budget
+  (`calibratedAiCoreBudget`: over 95% → shrink, well under while history was dropped → grow),
+  ≤ 3 counts per round; API failure → char estimate + overflow retry as before.
+  Host scenarios with a fake tokenizer: 1.5× denser than the estimate → 46 requests, max 3620
+  device tokens, none over; countTokens missing → still completes via overflow retry;
+  0.67× sparser → 23 results kept in the prompt instead of 12.
+  [REQUIRES VIVO VALIDATION] whether countTokens includes the prefix/template, its latency,
+  and what getTokenLimit returns on E4B: logcat `getTokenLimit=` and `counted=`.
 
 ## Next steps (priority order)
 1. Build (`assembleDebug`) + Vivo checklist above (incl. Sprint 5); record results here.

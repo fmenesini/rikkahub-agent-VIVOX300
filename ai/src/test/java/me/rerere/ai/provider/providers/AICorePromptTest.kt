@@ -328,4 +328,34 @@ class AICorePromptTest {
         assertTrue(p.toolsShown < p.toolsTotal)
         assertTrue(p.systemPrefix.contains("- read_tool_output(id*, offset, query)"))
     }
+
+    // ---- exact budgeting with countTokens / getTokenLimit ----
+
+    @Test
+    fun `reported token limit only lowers the documented input limit`() {
+        assertEquals(AICORE_INPUT_TOKEN_LIMIT, aiCoreInputLimit(null))
+        assertEquals(AICORE_INPUT_TOKEN_LIMIT, aiCoreInputLimit(12)) // implausible: ignored
+        assertEquals(AICORE_INPUT_TOKEN_LIMIT, aiCoreInputLimit(128_000))
+        assertEquals(3000 - AICORE_MAX_OUTPUT_TOKENS, aiCoreInputLimit(3000))
+    }
+
+    @Test
+    fun `calibration shrinks an over-limit prompt below the target`() {
+        // Estimated 3600, the tokenizer says 5400 (ratio 1.5): rebuild at ~2533 estimated.
+        val next = calibratedAiCoreBudget(3600, 3600, 5400, 4000, droppedUnits = 3)!!
+        assertTrue(next < 3600)
+        assertTrue("real tokens after rebuild ${next * 1.5}", next * 1.5 <= 4000 * AICORE_COUNTED_FILL)
+    }
+
+    @Test
+    fun `calibration grows the budget only when history was dropped and there is room`() {
+        // Ratio 0.6: 3600 estimated are 2160 real, far under the 3800 target.
+        val grown = calibratedAiCoreBudget(3600, 3600, 2160, 4000, droppedUnits = 5)!!
+        assertTrue(grown > 3600)
+        assertTrue(grown * 0.6 <= 4000 * AICORE_COUNTED_FILL + 1)
+        assertEquals(null, calibratedAiCoreBudget(3600, 3600, 2160, 4000, droppedUnits = 0))
+        // Near the target: leave it alone.
+        assertEquals(null, calibratedAiCoreBudget(3600, 3600, 3500, 4000, droppedUnits = 5))
+        assertEquals(null, calibratedAiCoreBudget(3600, 0, 100, 4000, droppedUnits = 5))
+    }
 }

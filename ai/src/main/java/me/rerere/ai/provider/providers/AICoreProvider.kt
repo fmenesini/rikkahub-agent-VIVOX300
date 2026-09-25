@@ -90,6 +90,16 @@ class AICoreProvider(private val context: Context) : Provider<ProviderSetting.AI
                 error(translateAICoreError(t))
             }
 
+            // Real tokenizer limits, when the API gives them; the char estimate is the fallback.
+            val inputLimit = aiCoreInputLimit(
+                try { generativeModel.getTokenLimit() } catch (t: Throwable) {
+                    if (t is CancellationException) throw t
+                    Log.w(TAG, "getTokenLimit threw, using the documented limit", t)
+                    null
+                }?.also { Log.i(TAG, "getTokenLimit=$it") }
+            )
+            var canCount = true
+
             val temperature = (params.temperature ?: 0.7f).coerceIn(0f, 1f)
             val streamId = "aicore-${System.currentTimeMillis()}"
             // One parser for all rounds: a tool call cut by the output cap resumes in the
@@ -133,19 +143,42 @@ class AICoreProvider(private val context: Context) : Provider<ProviderSetting.AI
             var overflowRetried = false
             var round = 0
             while (true) {
-                val built = buildAiCorePrompt(messages, params.tools, tokenBudget, prefill = generated.toString())
-                Log.i(
-                    TAG,
-                    "prompt round=$round est=${built.estimatedTokens}tok prefix=${built.systemPrefix.length}ch " +
-                        "prompt=${built.prompt.length}ch tools=${built.toolsShown}/${built.toolsTotal} " +
-                        "dropped=${built.droppedUnits}",
-                )
-                val request = generateContentRequest(TextPart(built.prompt)) {
+                var built = buildAiCorePrompt(messages, params.tools, tokenBudget, prefill = generated.toString())
+                fun requestFor(p: AiCorePrompt) = generateContentRequest(TextPart(p.prompt)) {
                     this.temperature = temperature
-                    if (built.systemPrefix.isNotBlank()) {
-                        this.promptPrefix = PromptPrefix(built.systemPrefix)
+                    if (p.systemPrefix.isNotBlank()) {
+                        this.promptPrefix = PromptPrefix(p.systemPrefix)
                     }
                 }
+                var request = requestFor(built)
+                // Measure before sending: rebuild with a calibrated budget until the counted
+                // prompt fits (at most 3 counts per round; the estimate alone is the fallback).
+                var counted: Int? = null
+                var counts = 0
+                while (canCount && counts < 3) {
+                    counts++
+                    counted = try {
+                        generativeModel.countTokens(request).totalTokens
+                    } catch (t: Throwable) {
+                        if (t is CancellationException) throw t
+                        Log.w(TAG, "countTokens threw, falling back to the char estimate", t)
+                        canCount = false
+                        null
+                    } ?: break
+                    val next = calibratedAiCoreBudget(tokenBudget, built.estimatedTokens, counted, inputLimit, built.droppedUnits)
+                        ?: break
+                    Log.i(TAG, "counted=${counted}tok est=${built.estimatedTokens} limit=$inputLimit: budget $tokenBudget -> $next")
+                    tokenBudget = next
+                    built = buildAiCorePrompt(messages, params.tools, tokenBudget, prefill = generated.toString())
+                    request = requestFor(built)
+                    counted = null
+                }
+                Log.i(
+                    TAG,
+                    "prompt round=$round est=${built.estimatedTokens}tok counted=${counted ?: "-"} " +
+                        "prefix=${built.systemPrefix.length}ch prompt=${built.prompt.length}ch " +
+                        "tools=${built.toolsShown}/${built.toolsTotal} dropped=${built.droppedUnits}",
+                )
                 val joiner = ContinuationJoiner(generated.toString())
                 val generatedBefore = generated.length
                 var hitMaxTokens = false
