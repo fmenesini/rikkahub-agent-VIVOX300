@@ -7,6 +7,7 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import java.util.Locale
 
 /**
  * Phase 16 — deterministic pre-LLM intent matcher.
@@ -138,8 +139,8 @@ object FastPathRouter {
                         val totalGb = totalBytes?.let { it / gb } ?: 0.0
                         when {
                             freeBytes == null -> "Storage info unavailable."
-                            totalGb > 0.0 -> "%.1f GB free of %.1f GB.".format(freeGb, totalGb)
-                            else -> "%.1f GB free.".format(freeGb)
+                            totalGb > 0.0 -> String.format(Locale.ROOT, "%.1f GB free of %.1f GB.", freeGb, totalGb)
+                            else -> String.format(Locale.ROOT, "%.1f GB free.", freeGb)
                         }
                     },
                 )
