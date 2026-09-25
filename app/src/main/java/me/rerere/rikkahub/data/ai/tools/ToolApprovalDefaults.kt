@@ -326,4 +326,80 @@ object ToolApprovalDefaults {
      */
     fun applyTo(tool: Tool): Tool =
         if (requiresApproval(tool.name)) tool.copy(needsApproval = { true }) else tool
+
+    /** Who, if anyone, can answer an approval prompt in this conversation. */
+    enum class RunKind {
+        /** In-app chat or Telegram: a human sees the approval card. */
+        INTERACTIVE,
+        /** Cron / external automation / skill tester: pre-authorised, nobody watching. */
+        UNATTENDED,
+        /** Sub-agent: nobody watching; may only use what its parent chat already granted. */
+        DELEGATED,
+    }
+
+    sealed interface Decision {
+        data object Run : Decision
+        data object Prompt : Decision
+        data class Deny(val reason: String) : Decision
+    }
+
+    /** Memory writes persist into every future chat's prompt; nobody vets them unattended. */
+    const val MEMORY_TOOL = "memory_tool"
+
+    /**
+     * Whether [toolName] may skip the prompt. A grant never widens across contexts:
+     * NO_ALWAYS_ALLOW tools need a fresh per-call approval on every path (YOLO, chat scope
+     * and stale always-allow entries included — these used to be enforced by hiding a
+     * button only), and a sub-agent inherits exactly its parent chat's grants instead of
+     * the blanket auto-approval unattended runs get.
+     */
+    fun autoApproves(
+        toolName: String,
+        kind: RunKind,
+        yolo: Boolean,
+        grantedForChat: Boolean,
+        grantedForParentChat: Boolean,
+        alwaysAllowed: Boolean,
+    ): Boolean = when {
+        toolName in NO_ALWAYS_ALLOW -> false
+        yolo -> true
+        kind == RunKind.UNATTENDED -> true
+        kind == RunKind.DELEGATED -> grantedForParentChat || alwaysAllowed
+        else -> grantedForChat || alwaysAllowed
+    }
+
+    /**
+     * Per-tool decision for one step of the agent loop (after the Hardline floor). Runs that
+     * nobody watches cannot answer a prompt, so anything that would prompt is denied with a
+     * reason the model can act on, and tools that must never run unattended are denied even
+     * when they need no approval interactively.
+     */
+    // inline so the loop can pass its suspend auto-approval lookup, evaluated lazily.
+    inline fun decide(
+        toolName: String,
+        needsApproval: Boolean,
+        kind: RunKind,
+        autoApproved: () -> Boolean,
+    ): Decision {
+        if (kind != RunKind.INTERACTIVE) {
+            if (toolName in NO_ALWAYS_ALLOW) {
+                return Decision.Deny(
+                    "requires_human_approval: $toolName needs a per-call approval and cannot " +
+                        "run in an unattended or sub-agent run. Report back and let the user run it."
+                )
+            }
+            if (toolName == MEMORY_TOOL) {
+                return Decision.Deny(
+                    "memory_disabled_unattended: memory cannot be changed from an unattended or " +
+                        "sub-agent run. Put the fact in your final reply instead."
+                )
+            }
+        }
+        if (!needsApproval || autoApproved()) return Decision.Run
+        return if (kind == RunKind.INTERACTIVE) Decision.Prompt else Decision.Deny(
+            "not_authorised_for_this_run: $toolName needs approval and this run has no one to " +
+                "ask (sub-agents may only use tools the parent chat already allowed). Report " +
+                "what you need in your final reply."
+        )
+    }
 }

@@ -492,6 +492,10 @@ class GenerationLoop(
         // closure that reads ToolApprovalAllowList + ToolApprovalPreferences. Default
         // returns false so callers that don't care still get vanilla approval gating.
         isToolAutoApproved: suspend (toolName: String) -> Boolean = { false },
+        // Who can answer an approval prompt in this conversation. Non-interactive runs
+        // (cron, sub-agents) deny instead of prompting: see ToolApprovalDefaults.decide.
+        approvalRunKind: me.rerere.rikkahub.data.ai.tools.ToolApprovalDefaults.RunKind =
+            me.rerere.rikkahub.data.ai.tools.ToolApprovalDefaults.RunKind.INTERACTIVE,
         // Optional per-call addendum appended to the system prompt. Used by surfaces that
         // need the model to know runtime context (e.g. "you're talking via Telegram, the
         // chat_id is 12345") without polluting the user message body — without this the
@@ -770,18 +774,29 @@ class GenerationLoop(
                                     "should run it themselves in a terminal outside the agent."
                             ))
                         }
-                        // Tool needs approval and state is Auto:
-                        toolDef?.needsApproval(tool.inputAsJson()) == true &&
-                            tool.approvalState is ToolApprovalState.Auto -> {
-                            // Fresh per-tool auto-approval check (was a frozen pre-
-                            // resolved set). Costs a DataStore.first() per tool but tools
-                            // are typically <5 per turn so the latency is negligible, and
-                            // freshness matters for the YOLO toggle / mid-iteration grants.
-                            if (isToolAutoApproved(tool.toolName)) {
-                                tool  // leave as Auto so the executor runs it without prompting
-                            } else {
-                                hasPendingApproval = true
-                                tool.copy(approvalState = ToolApprovalState.Pending)
+                        // State is Auto: run, prompt or deny per ToolApprovalDefaults.decide.
+                        tool.approvalState is ToolApprovalState.Auto -> {
+                            val decision = me.rerere.rikkahub.data.ai.tools.ToolApprovalDefaults.decide(
+                                toolName = tool.toolName,
+                                needsApproval = toolDef?.needsApproval(tool.inputAsJson()) == true,
+                                kind = approvalRunKind,
+                            ) {
+                                // Fresh per-tool auto-approval check (was a frozen pre-
+                                // resolved set). Only evaluated for tools that need approval;
+                                // freshness matters for the YOLO toggle / mid-iteration grants.
+                                isToolAutoApproved(tool.toolName)
+                            }
+                            when (decision) {
+                                // leave as Auto so the executor runs it without prompting
+                                me.rerere.rikkahub.data.ai.tools.ToolApprovalDefaults.Decision.Run -> tool
+                                me.rerere.rikkahub.data.ai.tools.ToolApprovalDefaults.Decision.Prompt -> {
+                                    hasPendingApproval = true
+                                    tool.copy(approvalState = ToolApprovalState.Pending)
+                                }
+                                is me.rerere.rikkahub.data.ai.tools.ToolApprovalDefaults.Decision.Deny -> {
+                                    Log.w(TAG, "approval policy denied ${tool.toolName} ($approvalRunKind): ${decision.reason}")
+                                    tool.copy(approvalState = ToolApprovalState.Denied(decision.reason))
+                                }
                             }
                         }
                         // State is Pending -> keep waiting
