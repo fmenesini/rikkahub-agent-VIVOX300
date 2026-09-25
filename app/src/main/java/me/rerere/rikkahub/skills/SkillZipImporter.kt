@@ -6,6 +6,7 @@ import java.io.IOException
 import java.io.InputStream
 import java.nio.charset.Charset
 import java.util.zip.ZipInputStream
+import me.rerere.workspace.deleteRecursivelyNoFollow
 
 /**
  * Phase 19C — extract a `.zip` skill bundle into a destination directory under defensive
@@ -209,7 +210,7 @@ object SkillZipImporter {
     }
 
     private fun cleanup(dir: File) {
-        runCatching { dir.deleteRecursively() }
+        runCatching { dir.deleteRecursivelyNoFollow() }
     }
 }
 

@@ -39,13 +39,26 @@ SRC=(
   "$ROOT"/scripts/host-test/stubs/*.kt   # fake android.* / ML Kit surface
   "$ROOT"/scripts/host-test/AICoreProviderScenario.kt
 )
-TESTS=( "$T"/provider/providers/AICorePromptTest.kt )
+W="$ROOT/workspace/src/main/java/me/rerere/workspace"
+SRC+=( "$W"/WorkspaceFileSystem.kt "$W"/SafeFiles.kt "$W"/Workspace.kt )
+APP="$ROOT/app/src/main/java/me/rerere/rikkahub"
+APPT="$ROOT/app/src/test/java/me/rerere/rikkahub"
+SRC+=( "$APP"/data/ai/tools/local/PathSafetyGuard.kt )
+TESTS=(
+  "$T"/provider/providers/AICorePromptTest.kt
+  "$ROOT"/workspace/src/test/java/me/rerere/workspace/WorkspaceSymlinkEscapeTest.kt
+  "$APPT"/data/ai/tools/local/PathSafetyGuardTest.kt
+  "$APPT"/data/ai/tools/local/PathSafetyGuardDevicePathsTest.kt
+)
 
 "$K/bin/kotlinc" -nowarn -Xplugin="$K/lib/kotlinx-serialization-compiler-plugin.jar" \
   -cp "$CP" -d "$OUT" "${SRC[@]}" "${TESTS[@]}" 2>&1 | grep -v '^Picked up JAVA_TOOL_OPTIONS' || true
 [ -n "$(find "$OUT" -name 'AICorePromptTest*.class' -print -quit)" ] || { echo "compile failed"; exit 1; }
 RUN=(java -cp "$OUT:$CP:$K/lib/kotlin-stdlib.jar")
-"${RUN[@]}" org.junit.runner.JUnitCore me.rerere.ai.provider.providers.AICorePromptTest 2>&1 \
+"${RUN[@]}" org.junit.runner.JUnitCore me.rerere.ai.provider.providers.AICorePromptTest \
+  me.rerere.workspace.WorkspaceSymlinkEscapeTest \
+  me.rerere.rikkahub.data.ai.tools.local.PathSafetyGuardTest \
+  me.rerere.rikkahub.data.ai.tools.local.PathSafetyGuardDevicePathsTest 2>&1 \
   | grep -v '^Picked up JAVA_TOOL_OPTIONS' | tee "$OUT/junit.log"
 grep -q '^OK (' "$OUT/junit.log"
 # Drives the real AICoreProvider.streamText against a scripted fake GenerativeModel.

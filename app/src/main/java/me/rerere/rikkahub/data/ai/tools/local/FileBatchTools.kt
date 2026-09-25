@@ -15,6 +15,7 @@ import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.Tool
 import java.io.File
 import java.io.IOException
+import me.rerere.workspace.deleteRecursivelyNoFollow
 
 // ============================================================
 //  Batch file operations (Phase enhancement item 5.5)
@@ -201,7 +202,7 @@ fun batchMoveTool(): Tool = Tool(
                     // No destination to protect: rename, copy+delete across filesystems.
                     if (!src.renameTo(target)) {
                         src.copyRecursively(target, overwrite = false)
-                        src.deleteRecursively()
+                        src.deleteRecursivelyNoFollow()
                     }
                     success++
                 } else {
@@ -211,17 +212,17 @@ fun batchMoveTool(): Tool = Tool(
                     val backup = File(destination, "${target.name}.rkmv-old-${System.nanoTime()}")
                     if (target.renameTo(backup)) {
                         if (src.renameTo(target)) {
-                            backup.deleteRecursively()
+                            backup.deleteRecursivelyNoFollow()
                             success++
                         } else {
                             val tmp = File(destination, "${target.name}.rkmv-new-${System.nanoTime()}")
                             src.copyRecursively(tmp, overwrite = false)
                             if (tmp.renameTo(target)) {
-                                src.deleteRecursively()
-                                backup.deleteRecursively()
+                                src.deleteRecursivelyNoFollow()
+                                backup.deleteRecursivelyNoFollow()
                                 success++
                             } else {
-                                tmp.deleteRecursively()
+                                tmp.deleteRecursivelyNoFollow()
                                 backup.renameTo(target)
                                 failed += path to "io_error"
                             }
@@ -235,14 +236,14 @@ fun batchMoveTool(): Tool = Tool(
                         val backup = File(destination, "${target.name}.rkmv-old-${System.nanoTime()}")
                         src.copyRecursively(tmp, overwrite = false)
                         if (!target.renameTo(backup)) {
-                            tmp.deleteRecursively()
+                            tmp.deleteRecursivelyNoFollow()
                             failed += path to "io_error"
                         } else if (tmp.renameTo(target)) {
-                            backup.deleteRecursively()
-                            src.deleteRecursively()
+                            backup.deleteRecursivelyNoFollow()
+                            src.deleteRecursivelyNoFollow()
                             success++
                         } else {
-                            tmp.deleteRecursively()
+                            tmp.deleteRecursivelyNoFollow()
                             backup.renameTo(target)
                             failed += path to "io_error"
                         }
@@ -292,7 +293,7 @@ fun batchDeleteTool(): Tool = Tool(
                 failed += path to "not_empty"; continue
             }
             try {
-                val ok = if (file.isDirectory) file.deleteRecursively() else file.delete()
+                val ok = if (file.isDirectory) file.deleteRecursivelyNoFollow() else file.delete()
                 if (ok) success++ else failed += path to "delete_failed"
             } catch (e: SecurityException) {
                 failed += path to (e.message ?: "permission_denied")

@@ -98,6 +98,10 @@ fun sshUploadTool(context: Context, repo: SshHostRepository): Tool = Tool(
         val localPath = p["local_path"]?.jsonPrimitive?.contentOrNull ?: error("local_path is required")
         val remotePath = p["remote_path"]?.jsonPrimitive?.contentOrNull ?: error("remote_path is required")
         val timeoutSec = (p["timeout_seconds"]?.jsonPrimitive?.intOrNull ?: 60).coerceIn(1, 600)
+        // Upload is data egress: never let it read our secrets or other apps' data.
+        PathSafetyGuard.check(localPath)?.let { v ->
+            return@Tool fmTextPart(fmErrEnvelope(v.code, v.detail))
+        }
         val localFile = File(localPath)
         if (!localFile.exists() || !localFile.isFile) {
             return@Tool listOf(UIMessagePart.Text(
@@ -150,6 +154,10 @@ fun sshDownloadTool(context: Context, repo: SshHostRepository): Tool = Tool(
         val remotePath = p["remote_path"]?.jsonPrimitive?.contentOrNull ?: error("remote_path is required")
         val localPath = p["local_path"]?.jsonPrimitive?.contentOrNull ?: error("local_path is required")
         val timeoutSec = (p["timeout_seconds"]?.jsonPrimitive?.intOrNull ?: 60).coerceIn(1, 600)
+        // Download writes a local file: it must not overwrite secrets (datastore, known_hosts).
+        PathSafetyGuard.check(localPath)?.let { v ->
+            return@Tool fmTextPart(fmErrEnvelope(v.code, v.detail))
+        }
         val localFile = File(localPath)
         // Ensure the local parent directory exists.
         try { localFile.parentFile?.mkdirs() } catch (_: Throwable) {}

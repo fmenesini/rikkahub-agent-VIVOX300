@@ -25,6 +25,7 @@ import me.rerere.rikkahub.utils.exportImageFile
 import me.rerere.rikkahub.utils.getActivity
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
+import me.rerere.workspace.deleteRecursivelyNoFollow
 
 class FilesManager(
     private val context: Context,
@@ -386,7 +387,7 @@ class FilesManager(
 
         var allDeletedFromDisk = true
         entries.orEmpty().forEach { entry ->
-            if (!runCatching { entry.deleteRecursively() }.getOrDefault(false)) {
+            if (!runCatching { entry.deleteRecursivelyNoFollow() }.getOrDefault(false)) {
                 allDeletedFromDisk = false
             }
         }
@@ -414,7 +415,7 @@ class FilesManager(
             .forEach { entity ->
                 val file = getFile(entity)
                 val deletedFromDisk = !file.exists() || runCatching {
-                    file.deleteRecursively()
+                    file.deleteRecursivelyNoFollow()
                 }.getOrDefault(false)
 
                 if (deletedFromDisk) {
