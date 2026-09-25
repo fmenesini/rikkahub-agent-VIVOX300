@@ -31,10 +31,16 @@ jobs:
           distribution: temurin
           java-version: "21"
 
-      - uses: android-actions/setup-android@v3
-
+      # The runner image ships the Android SDK (ANDROID_HOME); setup-android@v3 is not used
+      # because it insists on the removed "tools" package and fails.
       - name: Android SDK packages
-        run: sdkmanager "platform-tools" "platforms;android-37.0" "cmake;3.22.1"
+        run: |
+          set -euo pipefail
+          sdkm="$(ls -d "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager | sort -V | tail -1)"
+          echo "Using $sdkm (ANDROID_HOME=$ANDROID_HOME)"
+          yes | "$sdkm" --licenses > /dev/null || true
+          "$sdkm" --install "platform-tools" "platforms;android-37.0" "cmake;3.22.1"
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
 
       # :web runs bun install + pnpm run build on every preBuild.
       - uses: actions/setup-node@v4
