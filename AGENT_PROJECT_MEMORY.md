@@ -70,8 +70,21 @@ Security
   (`![](https://x/?d=…)`). Fix = click-to-load remote images in assistant messages (UX decision).
 - [CONFIRMED] PRoot binds `/upload` (all chat attachments) and a writable `/skills` into the shell:
   the model can read every upload and persistently rewrite its own skills (prompt injection).
-- [HYPOTHESIS] PRoot is not a sandbox: with /proc bound, `/proc/<pid>/root` or `/proc/<pid>/cwd`
-  may reach the host FS (app-private data). Test on device: `ls /proc/$PPID/root/data/user/0/`.
+- [PROBABLE, REQUIRES VIVO VALIDATION] PRoot /proc escape. Host probe (generic `proot` 5.1.0
+  from Ubuntu apt, x86_64, no `--link2symlink` — NOT the Termux-patched arm64 binary this app
+  ships in `nativeLibraryDir`, so this result does not transfer 1:1): with `/proc` bound the
+  same way `ProotShellRunner` binds it, `readlink /proc/<same-uid-pid>/cwd` (or `/root`) from
+  inside the jail returns the real absolute host path — a plain information disclosure (reveals
+  host directory layout, e.g. `/data/user/0/<pkg>/...`, from inside the jail). Actually opening
+  or listing through that magic symlink (`ls`, `cat`) failed with ENOENT on this proot build:
+  PRoot re-canonicalizes the resolved target through its own binding table before the kernel
+  sees it, so the naive "cd into /proc/<pid>/root and read a file" escape did NOT reproduce
+  here. This FALSIFIES the escape for proot 5.1.0/x86_64 without `--link2symlink`; it says
+  nothing about the on-device Termux-patched binary (different version, arch, and that flag
+  changes hardlink/symlink handling specifically). Vivo test: `ln -s /data/user/0/<pkg>
+  /workspace/x/marker` then from a workspace_shell session `readlink /proc/self/root` and try
+  `cat /proc/$PPID/root/data/user/0/<pkg>/files/datastore/*` with a throwaway marker file, not
+  real data.
 - [CONFIRMED] Hardline is regex-only (`r''m`, `$(echo rm)`, python rmtree pass) — by design;
   approval is the control. "Always Allow" on termux/workspace_shell removes it.
 - [CONFIRMED] WebView redirects to private IPs are not checked (own network stack).
@@ -89,6 +102,42 @@ Security
 5. 6+ step tool task: task still solved; no ErrorCode/overflow; note latency per round.
 6. Overflow: paste ~15 KB text; expect one retry log, not a crash. Record the real error text.
 7. Security: `ln -s /data/user/0/<pkg>/databases /workspace/x/l; delete x` → databases intact.
+
+## Sprint 2 (2026-09-25) — environment blocker and code-level findings
+This session runs in the same cloud sandbox as Sprint 1: no `adb`, no USB, no physical
+device, and Google Maven is still blocked, so none of Sprint 2's device/build phases
+(real `assembleDebug`, `adb install`, on-device AICore/tool-calling/security tests) could
+be performed here. Nothing below is fabricated device output — see BLOCKER note.
+
+[BLOCKER] Sprint 2 (real build → install → Vivo validation) requires the actual
+Dell/Kubuntu machine with the Vivo X300 attached via USB. Not available in this session.
+Do not re-attempt from a cloud session; resume Sprint 2 directly on the Dell using
+BUILD_ANDROID.md, then work the checklist below.
+
+- [CONFIRMED, code-level, no device needed] Explains the observed anomaly (`/workspace`
+  visible, `/home` empty, `/storage/emulated/0` missing) exhaustively from
+  `ProotShellRunner.buildCommand` + the only `WorkspaceBindMount` call site
+  (`RepositoryModule.kt`):
+  - **`/home` empty**: (A) genuinely present but empty — expected. `linuxDir` is whatever
+    distro rootfs tarball the user picked in Settings (`RootfsInstaller` just downloads and
+    extracts a URL; `RootfsPatcher` only touches `etc/resolv.conf`, `etc/hosts`,
+    `etc/hostname`, locale, group names, and creates `tmp`/`var/tmp`/`root`). A minimal
+    distro image ships `/home` empty because no user accounts were ever created in it —
+    not a bug, not hidden by RikkaHub.
+  - **`/storage/emulated/0` missing**: (F), by design, not a bug — there is no bind mount
+    for it anywhere. The full bind list is exactly: `context.filesDir` → `/workspace`
+    (hardcoded in `ProotShellRunner`), plus the three `WorkspaceBindMount`s in
+    `RepositoryModule.kt` (`/skills`, `/tool_outputs`, `/upload`), plus
+    `WorkspaceManager.KERNEL_FS_MOUNTS` (`/dev`, `/proc`, `/sys`). No `/sdcard`, no
+    `/storage`, anywhere in the codebase. The workspace model is (and was already
+    documented as) fully isolated app-private storage; shared storage is reached only
+    through the separate file-manager tools (`PathSafetyGuard`-gated), never through the
+    shell. This matches "workspace isolated" in the Goal section — working as intended,
+    no fix needed. If shared-storage access from the shell is wanted, that is a product
+    decision (bind `/sdcard` read-only, or a SAF-backed FUSE bridge), not a bug fix — not
+    done here since it was not asked for and would widen the shell's reach.
+- See the PRoot `/proc` entry above (Open risks) for the host probe of the escape
+  hypothesis — falsified for a generic x86_64 proot build, unresolved for the real binary.
 
 ## Next steps (priority order)
 1. Build + Vivo checklist above; record results here.
