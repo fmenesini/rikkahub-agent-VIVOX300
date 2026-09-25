@@ -32,6 +32,13 @@ scripted **fake** ML Kit (`scripts/host-test/stubs`, shape only, not the real AA
 On a dev machine the same JUnit tests run with `./gradlew :ai:testDebugUnitTest :workspace:testDebugUnitTest :app:testDebugUnitTest`.
 The repo has no CI.
 
+## Android build (details: BUILD_ANDROID.md) — NOT yet performed anywhere
+`:app`, variant debug, `git submodule update --init --recursive && ./gradlew :app:assembleDebug`
+→ `app/build/outputs/apk/debug/app-arm64-v8a-debug.apk` (package `excp.rikkahub.debug`).
+Gradle 9.5.0, AGP 9.3.1, Kotlin 2.4.10, compileSdk/targetSdk 37, minSdk 26, Java target 17,
+JDK ≥ 17. SDK: platforms;android-37, cmake;3.22.1, default NDK. Also bun + pnpm + Node
+(`:web` preBuild). Both git submodules are uninitialized in a fresh clone.
+
 ## Sprint 1 (2026-09-25) — findings and fixes
 AICore / context
 - [CONFIRMED→MITIGATED] Every tool-loop step is appended to the same assistant message, so the
