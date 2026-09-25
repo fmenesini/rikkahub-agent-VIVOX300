@@ -57,6 +57,10 @@ import me.rerere.rikkahub.data.ai.transformers.transforms
 import me.rerere.rikkahub.data.ai.transformers.visualTransforms
 import me.rerere.rikkahub.data.ai.limits.ToolRuntimeLimits
 import me.rerere.rikkahub.data.ai.tools.buildMemoryTools
+import me.rerere.rikkahub.data.ai.tools.ToolOutputStore
+import me.rerere.rikkahub.data.ai.tools.buildReadToolOutputTool
+import me.rerere.rikkahub.data.ai.tools.hasRetrievableToolOutput
+import me.rerere.ai.core.RuntimeTools
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.findProvider
 import me.rerere.rikkahub.data.model.Assistant
@@ -68,8 +72,7 @@ import kotlin.time.Clock
 import kotlin.uuid.Uuid
 
 private const val TAG = "GenerationHandler"
-private const val MAX_TOOL_OUTPUT_CHARS = 32 * 1024
-private const val TOOL_OUTPUT_PREVIEW_CHARS = 4 * 1024
+
 private const val GENERATION_STREAM_RETRY_INITIAL_DELAY_MS = 750L
 private const val GENERATION_STREAM_RETRY_MAX_DELAY_MS = 4_000L
 
@@ -578,6 +581,13 @@ class GenerationLoop(
                     ).let(this::addAll)
                 }
                 addAll(tools)
+                // Runtime-owned, read-only: lets the model page through a result the prompt
+                // had to clip. Bound to this request's messages, so it cannot read other chats.
+                if (isNotEmpty() && none { it.name == RuntimeTools.READ_TOOL_OUTPUT } &&
+                    hasRetrievableToolOutput(messages)
+                ) {
+                    add(buildReadToolOutputTool(messages, File(context.filesDir, FileFolders.TOOL_OUTPUT_STORE)))
+                }
             }
 
             // Check if we have tool calls ready to continue after user interaction.
@@ -1093,11 +1103,10 @@ class GenerationLoop(
                                         })))
                                     }
                             }
-                            // Upstream tool-output truncation: when the workspace shell is
-                            // available, oversized text output is spilled to /tool_outputs/
-                            // and replaced with a preview + read/grep instructions so the
-                            // model can pull the full payload on demand instead of burning
-                            // the context window.
+                            // Tool-output virtualization: oversized text output is spilled to
+                            // /tool_outputs/ and replaced with a preview; the model pulls the
+                            // rest on demand with read_tool_output (and cat/grep when the
+                            // workspace shell is available) instead of burning the context.
                             val hasShellAccess = toolsInternal.any { it.name == "workspace_shell" }
                             executedTools += markedTool.copy(
                                 output = maybeTruncateToolOutput(tool.toolCallId, result, hasShellAccess)
@@ -1439,33 +1448,19 @@ class GenerationLoop(
         output: List<UIMessagePart>,
         hasShellAccess: Boolean,
     ): List<UIMessagePart> {
-        val textParts = output.filterIsInstance<UIMessagePart.Text>()
-        val nonTextParts = output.filter { it !is UIMessagePart.Text }
-        val totalChars = textParts.sumOf { it.text.length }
-
-        if (totalChars <= MAX_TOOL_OUTPUT_CHARS || !hasShellAccess) return output
-
-        Log.i(TAG, "maybeTruncateToolOutput: truncating tool $toolCallId output ($totalChars chars)")
-
-        val fullText = textParts.joinToString("\n") { it.text }
-        val preview = fullText.take(TOOL_OUTPUT_PREVIEW_CHARS)
-
-        val fileName = "${toolCallId}.txt"
-        val outputDir = File(context.filesDir, FileFolders.TOOL_OUTPUTS).apply { mkdirs() }
-        File(outputDir, fileName).writeText(fullText)
-
-        return listOf(
-            UIMessagePart.Text(
-                buildString {
-                    appendLine("[Tool output truncated: $totalChars characters total]")
-                    appendLine("Full output saved to: /tool_outputs/$fileName")
-                    appendLine("Use shell to read: `cat /tool_outputs/$fileName`")
-                    appendLine("Use shell to search: `grep \"pattern\" /tool_outputs/$fileName`")
-                    appendLine()
-                    append(preview)
-                }
-            )
-        ) + nonTextParts
+        val result = ToolOutputStore.virtualize(
+            toolCallId = toolCallId,
+            output = output,
+            dir = File(context.filesDir, FileFolders.TOOL_OUTPUT_STORE),
+            // The shell copy is what cat/grep see; only chats with the shell get one.
+            shellCopyDir = if (hasShellAccess) File(context.filesDir, FileFolders.TOOL_OUTPUTS) else null,
+        )
+        if (result !== output) {
+            Log.i(TAG, "maybeTruncateToolOutput: spilled tool $toolCallId output to the store")
+        } else if (output.sumOf { (it as? UIMessagePart.Text)?.text?.length ?: 0 } > ToolOutputStore.MAX_INLINE_CHARS) {
+            Log.w(TAG, "maybeTruncateToolOutput: could not store $toolCallId output; kept inline")
+        }
+        return result
     }
 
 }

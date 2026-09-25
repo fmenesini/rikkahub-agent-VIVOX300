@@ -4,7 +4,9 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.MessageRole
+import me.rerere.ai.core.RuntimeTools
 import me.rerere.ai.core.Tool
+import me.rerere.ai.ui.ToolApprovalState
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
 import org.junit.Assert.assertEquals
@@ -212,5 +214,118 @@ class AICorePromptTest {
     @Test
     fun `short final round is released`() {
         assertEquals(" end.", join("A long enough previous sentence here", " end."))
+    }
+
+    // ---- context virtualization: step ledger + resumable cuts ----
+
+    private val readTool = tool(RuntimeTools.READ_TOOL_OUTPUT, "Read an earlier tool result in full", "id", "offset", "query", required = listOf("id"))
+
+    @Test
+    fun `dropped steps leave a ledger with name, args and outcome`() {
+        // 150 steps: more than the ledger reserve can list. Step 125 failed; it is among the
+        // newest dropped steps, which the ledger lists first.
+        val steps = (1..150).map { i ->
+            if (i == 125) step(i, """{"error":"file_not_found","detail":"nope"}""" + " ".repeat(900))
+            else step(i, "result $i " + "y".repeat(900))
+        }
+        val msgs = listOf(user("Rename every photo in DCIM by date"), UIMessage(role = MessageRole.ASSISTANT, parts = steps))
+        val p = buildAiCorePrompt(msgs, emptyList())
+        assertTrue(p.estimatedTokens <= AICORE_INPUT_TOKEN_BUDGET)
+        val ledger = p.prompt.substringAfter("[earlier steps omitted]\n").substringBefore("\nmodel: ")
+        // A run of calls to one tool is one line: count, first and latest keys, outcomes.
+        val line = ledger.lineSequence().first()
+        assertTrue(line, Regex("""^- termux_run_command x(\d+): step 1, .*, … \(\+\d+\), .*step \d+ -> \d+ ok, 1 error \(step 125\)$""").matches(line))
+        val count = Regex("x(\\d+):").find(line)!!.groupValues[1].toInt()
+        assertEquals("every dropped call is accounted for", 150 - count, Regex("result \\d+ ").findAll(p.prompt).count())
+        assertFalse("ledger carries no result text", ledger.contains("yyyy"))
+        assertFalse(ledger.contains("not listed"))
+    }
+
+    @Test
+    fun `ledger marks errors and denials`() {
+        val denied = UIMessagePart.Tool("d1", "delete_file", """{"path":"a"}""",
+            listOf(UIMessagePart.Text("denied by user")), approvalState = ToolApprovalState.Denied("no"))
+        val failed = step(2, """{"error":"timeout"}""")
+        val filler = (3..30).map { step(it, "z".repeat(1200)) }
+        val msgs = listOf(user("clean up"), UIMessage(role = MessageRole.ASSISTANT, parts = listOf(denied, failed) + filler))
+        val p = buildAiCorePrompt(msgs, emptyList(), tokenBudget = 1500)
+        assertTrue(p.estimatedTokens <= 1500)
+        // Tight budget: lines appear only if they fit, but whatever is listed is labelled right.
+        if (p.prompt.contains("- delete_file")) assertTrue(p.prompt.contains("""- delete_file {"path":"a"} -> denied"""))
+        if (p.prompt.contains("step 2\"} ->")) assertTrue(p.prompt.contains("""step 2"} -> error"""))
+        assertTrue(looksLikeToolError("""{"error":"x"}"""))
+        assertTrue(looksLikeToolError("""  {"errorCode":1}"""))
+        assertFalse(looksLikeToolError("""{"result":"error handling is fine"}"""))
+    }
+
+    @Test
+    fun `ledger lines carry the call id only when the result can be read back`() {
+        // Alternating tools: no runs to merge, so each dropped call gets its own line.
+        val parts = (1..40).map { i ->
+            UIMessagePart.Tool("c$i", if (i % 2 == 0) "list_dir" else "read_file", """{"path":"p$i"}""",
+                listOf(UIMessagePart.Text("r$i " + "q".repeat(900))))
+        }
+        val msgs = listOf(user("scan"), UIMessage(role = MessageRole.ASSISTANT, parts = parts))
+        val without = buildAiCorePrompt(msgs, emptyList())
+        val with = buildAiCorePrompt(msgs, listOf(readTool))
+        assertFalse(without.prompt.contains("[id=c"))
+        assertTrue(with.prompt, Regex("""- read_file \{"path":"p\d+"\} -> ok \[id=c\d+, \d+ ch]""").containsMatchIn(with.prompt))
+        assertTrue(with.prompt, with.prompt.contains("older tool calls not listed"))
+        assertTrue(with.estimatedTokens <= AICORE_INPUT_TOKEN_BUDGET)
+    }
+
+    @Test
+    fun `clipped result names the call id and the offset where the cut starts`() {
+        val big = "HEAD" + "m".repeat(10_000) + "NEEDLE" + "m".repeat(10_000) + "TAIL"
+        val msgs = listOf(user("go"), UIMessage(role = MessageRole.ASSISTANT, parts = listOf(step(7, big))))
+        val p = buildAiCorePrompt(msgs, listOf(readTool))
+        val m = Regex("""chars cut; read_tool_output id=c7 offset=(\d+)]""").find(p.prompt)
+        assertTrue(p.prompt, m != null)
+        // The offset is exactly where the kept head ends, so reading from it loses nothing.
+        val offset = m!!.groupValues[1].toInt()
+        val head = p.prompt.substringAfter("<tool_result>").substringBefore("\n…[")
+        assertEquals(head.length, offset)
+        assertTrue(big.startsWith(head))
+        assertFalse(p.prompt.contains("NEEDLE"))
+    }
+
+    @Test
+    fun `clip keeps within its char cap with and without a resume hint`() {
+        val text = "a".repeat(50_000)
+        for (cap in listOf(400, 2400)) {
+            assertTrue(clipMiddle(text, cap).length <= cap)
+            assertTrue(clipMiddle(text, cap) { at -> "read_tool_output id=call_xyz offset=$at" }.length <= cap)
+        }
+        assertEquals("short", clipMiddle("short", 400) { "never" })
+    }
+
+    @Test
+    fun `context grows for 200 steps and every prompt stays inside the window`() {
+        // Simulates a long task: each round adds one step with a big result, the prompt is
+        // rebuilt, and must never exceed the budget while the task and newest result survive.
+        val parts = mutableListOf<UIMessagePart>()
+        val tools = (1..30).map { tool("tool_$it", "Does thing $it", "arg") } + readTool
+        var maxTokens = 0
+        for (i in 1..200) {
+            val size = listOf(50, 900, 6_000, 48_000)[i % 4]
+            parts += step(i, "R$i:" + "w".repeat(size))
+            val msgs = listOf(user("Audit the project and report every TODO"), UIMessage(role = MessageRole.ASSISTANT, parts = parts.toList()))
+            val prefill = if (i % 7 == 0) "partial ".repeat(100) else ""
+            val p = buildAiCorePrompt(msgs, tools, prefill = prefill)
+            maxTokens = maxOf(maxTokens, p.estimatedTokens)
+            assertTrue("step $i: ${p.estimatedTokens} tokens", p.estimatedTokens <= AICORE_INPUT_TOKEN_BUDGET)
+            assertTrue("step $i lost the task", p.prompt.contains("Audit the project and report every TODO"))
+            assertTrue("step $i lost the newest result", p.prompt.contains("R$i:"))
+            assertTrue(p.prompt.endsWith("model: $prefill"))
+        }
+        assertTrue("budget should be actually used, max=$maxTokens", maxTokens > AICORE_INPUT_TOKEN_BUDGET / 2)
+    }
+
+    @Test
+    fun `read_tool_output is always listed even when the tool list is cut`() {
+        val tools = (1..120).map { tool("filler_tool_$it", "Does unrelated thing number $it with a long description text") } + readTool
+        val p = buildAiCorePrompt(listOf(user("hello")), tools)
+        assertTrue(p.toolsShown < p.toolsTotal)
+        assertTrue(p.systemPrefix.contains("- read_tool_output(id*, offset, query)"))
     }
 }

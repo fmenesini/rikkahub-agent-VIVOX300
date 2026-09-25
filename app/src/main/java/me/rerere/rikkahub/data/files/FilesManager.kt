@@ -516,6 +516,8 @@ object FileFolders {
     const val SKILLS = "skills"
     const val FONTS = "fonts"
     const val TOOL_OUTPUTS = "tool_outputs"
+    /** Full text of oversized tool results, read back by read_tool_output. Not shell-mounted. */
+    const val TOOL_OUTPUT_STORE = "tool_output_store"
     const val IMAGES = "images"
 }
 

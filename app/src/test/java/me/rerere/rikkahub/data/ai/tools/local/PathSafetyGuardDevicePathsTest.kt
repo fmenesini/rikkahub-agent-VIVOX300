@@ -29,6 +29,8 @@ class PathSafetyGuardDevicePathsTest {
             assertNotNull(check("$root/no_backup/gemini_accounts"))
             assertNotNull(check("$root/app_webview/Default/Cookies"))
             assertNotNull(check("$root/files/known_hosts"))
+            assertNotNull(check("$root/files/tool_output_store/call_1.txt"))
+            assertNotNull(check("$root/files/tool_output_store"))
         }
     }
 

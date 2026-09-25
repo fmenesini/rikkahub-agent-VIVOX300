@@ -448,9 +448,11 @@ class RikkaHubApp : Application() {
     private fun cleanupToolOutputs() {
         get<AppScope>().launch(Dispatchers.IO) {
             runCatching {
-                val dir = File(filesDir, FileFolders.TOOL_OUTPUTS)
-                if (dir.exists()) {
-                    dir.deleteRecursively()
+                for (name in listOf(FileFolders.TOOL_OUTPUTS, FileFolders.TOOL_OUTPUT_STORE)) {
+                    val dir = File(filesDir, name)
+                    if (dir.exists()) {
+                        dir.deleteRecursively()
+                    }
                 }
             }
         }

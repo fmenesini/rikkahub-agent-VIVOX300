@@ -41,7 +41,9 @@ private val SYSTEM_PREFIXES = listOf(
  * data dir. The model reaches these only through purpose-built tools, never by path:
  * datastore = provider API keys / Telegram token, no_backup = OAuth accounts,
  * shared_prefs = skill secrets, app_webview = browser cookies, databases = chats,
- * files/known_hosts = SSH trust store (writing it would enable MITM).
+ * files/known_hosts = SSH trust store (writing it would enable MITM),
+ * files/tool_output_store = full tool results of every chat (read_tool_output serves them
+ * per conversation; a path would reach other chats' results).
  */
 private val OWN_SECRET_SUBPATHS = listOf(
     "databases",
@@ -50,6 +52,7 @@ private val OWN_SECRET_SUBPATHS = listOf(
     "app_webview",
     "files/datastore",
     "files/known_hosts",
+    "files/tool_output_store",
 )
 
 /**

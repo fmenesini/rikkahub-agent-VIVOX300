@@ -2,10 +2,13 @@ package me.rerere.ai.provider.providers
 
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.MessageRole
+import me.rerere.ai.core.RuntimeTools
 import me.rerere.ai.core.Tool
+import me.rerere.ai.ui.ToolApprovalState
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
 
@@ -47,13 +50,24 @@ internal fun estimateAiCoreTokens(text: CharSequence): Int {
     return (ascii + 2) / 3 + cjk + (other + 1) / 2
 }
 
-/** Keeps the head and tail of [text], replacing the middle with a visible cut marker. */
-internal fun clipMiddle(text: String, maxChars: Int): String {
+/**
+ * Keeps the head and tail of [text], replacing the middle with a visible cut marker. With
+ * [resumeHint] the marker also tells the model how to fetch the cut part: the hint gets the
+ * offset where the cut starts.
+ */
+internal fun clipMiddle(text: String, maxChars: Int, resumeHint: ((cutAt: Int) -> String)? = null): String {
     if (text.length <= maxChars) return text
-    val marker = "\n…[${text.length - maxChars} chars cut]…\n"
-    val keep = (maxChars - marker.length).coerceAtLeast(0)
+    // Size the marker with a worst-case offset first so the kept slice does not shift.
+    fun marker(cutAt: Int) = if (resumeHint == null) {
+        "\n…[${text.length - maxChars} chars cut]…\n"
+    } else {
+        "\n…[${text.length - maxChars} chars cut; ${resumeHint(cutAt)}]…\n"
+    }
+    val keep = (maxChars - marker(text.length).length).coerceAtLeast(0)
     val head = keep * 2 / 3
-    return text.take(head) + marker + text.takeLast(keep - head)
+    val cut = text.length - keep
+    val m = if (resumeHint == null) "\n…[$cut chars cut]…\n" else "\n…[$cut chars cut; ${resumeHint(head)}]…\n"
+    return text.take(head) + m + text.takeLast(keep - head)
 }
 
 internal data class AiCorePrompt(
@@ -76,7 +90,28 @@ private const val TASK_USER_CHARS = 2400
 private const val OTHER_TEXT_CHARS = 1200
 private const val MAX_TOOL_PREFIX_SHARE = 0.4
 
-private class PromptUnit(val role: String, val text: String, val pinned: Boolean = false)
+/** Ledger of dropped steps: at most this share of the budget, and this many tokens. */
+private const val LEDGER_SHARE = 0.15
+private const val LEDGER_MAX_TOKENS = 360
+private const val LEDGER_INPUT_CHARS = 80
+private const val LEDGER_KEY_CHARS = 40
+private const val LEDGER_GROUP_KEYS_CHARS = 240
+private const val LEDGER_NOTE_CHARS = 200
+private const val NOTE = "note"
+
+/**
+ * One piece of the flattened transcript. [ledger] is the record kept for a tool call when
+ * the call itself is dropped from the prompt (its result unit has none: the call's record
+ * already says how it ended).
+ */
+private class PromptUnit(val role: String, val text: String, val pinned: Boolean = false, val ledger: LedgerEntry? = null)
+
+/**
+ * What the ledger remembers of a dropped unit: a tool call ([key] is its main argument
+ * value) or, with name [NOTE], text the model wrote during the current task (its working
+ * notes: conclusions drawn from results that are no longer in the prompt).
+ */
+private class LedgerEntry(val name: String, val args: String, val key: String, val outcome: String, val ref: String)
 
 /**
  * Builds the AICore request within a token budget. The history is flattened into units
@@ -103,9 +138,18 @@ internal fun buildAiCorePrompt(
     val toolBudget = (tokenBudget * MAX_TOOL_PREFIX_SHARE).toInt()
     val (prefix, toolsShown) = buildAiCoreSystemPrefix(tools, history, taskText, toolBudget)
 
-    val units = flattenForAiCore(history, taskIndex)
+    val retrievable = tools.any { it.name == RuntimeTools.READ_TOOL_OUTPUT }
+    val units = flattenForAiCore(history, taskIndex, retrievable)
     var remaining = tokenBudget - estimateAiCoreTokens(prefix) -
         estimateAiCoreTokens(prefill) - estimateAiCoreTokens("model: ")
+
+    // When the history will not fit, hold back room for a ledger of the dropped steps so
+    // the model still knows what it already did (and does not redo it) after the cut.
+    val fullCost = units.sumOf { estimateAiCoreTokens(it.text) + 2 }
+    val ledgerReserve = if (fullCost > remaining) {
+        minOf(LEDGER_MAX_TOKENS, (tokenBudget * LEDGER_SHARE).toInt(), (remaining / 4).coerceAtLeast(0))
+    } else 0
+    remaining -= ledgerReserve
 
     // Pinned task first (clipped further if even it does not fit), then newest-first.
     val kept = BooleanArray(units.size)
@@ -122,22 +166,74 @@ internal fun buildAiCorePrompt(
         kept[i] = true
         remaining -= cost
     }
+    remaining += ledgerReserve
+
+    // Ledger of the dropped tool calls, one line per run of calls to the same tool (a long
+    // task mostly repeats a few tools, so this keeps dozens of steps in a few lines).
+    // Lines are chosen newest first while they fit; the calls in the rest are counted.
+    val ledgerLines = arrayOfNulls<String>(units.size) // line, stored at its run's last index
+    val ledgerShort = arrayOfNulls<String>(units.size) // same run with its key list clipped
+    val ledgerCalls = IntArray(units.size)
+    run {
+        var i = 0
+        while (i < units.size) {
+            val first = units[i].ledger
+            if (kept[i] || first == null) { i++; continue }
+            val run = mutableListOf(first)
+            var last = i
+            var j = i + 1
+            // A run continues over dropped units of the same tool; result units carry no entry.
+            while (j < units.size && !kept[j]) {
+                val e = units[j].ledger
+                if (e != null) {
+                    if (e.name != first.name || e.name == NOTE) break
+                    run += e
+                    last = j
+                }
+                j++
+            }
+            ledgerLines[last] = renderLedgerRun(run, clipKeys = false)
+            ledgerShort[last] = renderLedgerRun(run, clipKeys = true)
+            ledgerCalls[last] = run.size
+            i = last + 1
+        }
+    }
+    val inLedger = BooleanArray(units.size)
+    for (i in units.indices.reversed()) {
+        val full = ledgerLines[i] ?: continue
+        // The full key list says exactly which calls were made; clip it only if it won't fit.
+        val line = if (estimateAiCoreTokens(full) + 1 <= remaining) full else ledgerShort[i]!!
+        val cost = estimateAiCoreTokens(line) + 1
+        if (cost > remaining) break
+        ledgerLines[i] = line
+        inLedger[i] = true
+        remaining -= cost
+    }
 
     var dropped = 0
     val prompt = buildString {
         var lastRole: String? = null
-        var gap = false
+        var gapStart = -1
+        fun closeGap(end: Int) {
+            if (gapStart < 0) return
+            append("[earlier steps omitted]\n")
+            var unlisted = 0
+            for (j in gapStart until end) {
+                val line = ledgerLines[j] ?: continue
+                if (inLedger[j]) append(line).append('\n')
+                else if (units[j].ledger?.name != NOTE) unlisted += ledgerCalls[j]
+            }
+            if (unlisted > 0) append("(+$unlisted older tool calls not listed)\n")
+            lastRole = null
+            gapStart = -1
+        }
         units.forEachIndexed { i, u ->
             if (!kept[i]) {
                 dropped++
-                gap = true
+                if (gapStart < 0) gapStart = i
                 return@forEachIndexed
             }
-            if (gap) {
-                append("[earlier steps omitted]\n")
-                lastRole = null
-                gap = false
-            }
+            closeGap(i)
             if (u.role != lastRole) {
                 if (lastRole != null) append('\n')
                 append(u.role).append(": ")
@@ -147,13 +243,14 @@ internal fun buildAiCorePrompt(
             }
             append(u.text)
         }
+        closeGap(units.size)
         if (lastRole != null) append('\n')
         append("model: ").append(prefill)
     }
     return AiCorePrompt(prefix, prompt, toolsShown, tools.size, dropped)
 }
 
-private fun flattenForAiCore(history: List<UIMessage>, taskIndex: Int): List<PromptUnit> {
+private fun flattenForAiCore(history: List<UIMessage>, taskIndex: Int, retrievable: Boolean): List<PromptUnit> {
     val lastToolResultMsg = history.indexOfLast { m ->
         m.parts.any { it is UIMessagePart.Tool && it.isExecuted }
     }
@@ -173,7 +270,11 @@ private fun flattenForAiCore(history: List<UIMessage>, taskIndex: Int): List<Pro
                     val text = part.text.trim()
                     if (text.isEmpty()) continue
                     val pinned = mi == taskIndex
-                    out += PromptUnit(role, clipMiddle(text, if (pinned) TASK_USER_CHARS else OTHER_TEXT_CHARS), pinned)
+                    // The model's own text after the task started is its working notes.
+                    val note = if (mi > taskIndex && message.role == MessageRole.ASSISTANT) {
+                        LedgerEntry(NOTE, "", "", "", shorten(neutralizeTranscriptMarkers(text).replace('\n', ' '), LEDGER_NOTE_CHARS))
+                    } else null
+                    out += PromptUnit(role, clipMiddle(text, if (pinned) TASK_USER_CHARS else OTHER_TEXT_CHARS), pinned, note)
                 }
                 is UIMessagePart.Tool -> {
                     val latest = part === lastToolPart
@@ -181,13 +282,21 @@ private fun flattenForAiCore(history: List<UIMessage>, taskIndex: Int): List<Pro
                         part.input.ifBlank { "{}" },
                         if (latest) LATEST_TOOL_INPUT_CHARS else OLD_TOOL_INPUT_CHARS,
                     )
-                    out += PromptUnit(role, "<tool_call>{\"name\":\"${part.toolName}\",\"input\":$input}</tool_call>")
                     val result = part.output.filterIsInstance<UIMessagePart.Text>()
                         .joinToString("\n") { it.text }.trim()
+                    out += PromptUnit(
+                        role,
+                        "<tool_call>{\"name\":\"${part.toolName}\",\"input\":$input}</tool_call>",
+                        ledger = ledgerEntry(part, result, retrievable),
+                    )
                     if (result.isNotEmpty()) {
+                        val resumeHint: ((Int) -> String)? = if (retrievable) {
+                            { at -> "${RuntimeTools.READ_TOOL_OUTPUT} id=${part.toolCallId} offset=$at" }
+                        } else null
                         val clipped = clipMiddle(
                             neutralizeTranscriptMarkers(result),
                             if (latest) LATEST_TOOL_RESULT_CHARS else OLD_TOOL_RESULT_CHARS,
+                            resumeHint,
                         )
                         out += PromptUnit(role, "<tool_result>$clipped</tool_result>")
                     }
@@ -198,6 +307,72 @@ private fun flattenForAiCore(history: List<UIMessage>, taskIndex: Int): List<Pro
     }
     return out
 }
+
+/**
+ * What the ledger keeps of a dropped tool call: what was called, how it ended, and (when the
+ * runtime can serve it) the id to read its full result again. No result text: the ledger only
+ * has to stop the model from redoing work, the content itself stays retrievable.
+ */
+private fun ledgerEntry(part: UIMessagePart.Tool, result: String, retrievable: Boolean): LedgerEntry {
+    val args = neutralizeTranscriptMarkers(part.input.ifBlank { "{}" }).replace('\n', ' ')
+    val outcome = when {
+        part.approvalState is ToolApprovalState.Denied -> "denied"
+        result.isEmpty() -> "no result"
+        looksLikeToolError(result) -> "error"
+        else -> "ok"
+    }
+    val ref = if (retrievable && result.isNotEmpty()) " [id=${part.toolCallId}, ${result.length} ch]" else ""
+    val key = runCatching {
+        (Json.parseToJsonElement(part.input) as? JsonObject)?.values
+            ?.firstNotNullOfOrNull { (it as? JsonPrimitive)?.content }
+    }.getOrNull()?.let { neutralizeTranscriptMarkers(it).replace('\n', ' ') } ?: args
+    return LedgerEntry(part.toolName, shorten(args, LEDGER_INPUT_CHARS), shorten(key, LEDGER_KEY_CHARS), outcome, ref)
+}
+
+private fun shorten(s: String, max: Int) = if (s.length <= max) s else s.take(max - 1) + "…"
+
+/**
+ * `- name {args} -> ok [id=…]` for a single call; for a run of calls to one tool:
+ * `- name x12: key1, key2, … -> 11 ok, 1 error (key7)`, keys clipped in the middle.
+ */
+private fun renderLedgerRun(run: List<LedgerEntry>, clipKeys: Boolean): String {
+    val one = run.singleOrNull()
+    if (one != null && one.name == NOTE) return "- (your note) ${one.ref}"
+    if (one != null) return "- ${one.name} ${one.args} -> ${one.outcome}${one.ref}"
+    val keys = run.joinToString(", ") { it.key }
+    val keyText = if (!clipKeys || keys.length <= LEDGER_GROUP_KEYS_CHARS) keys else {
+        val head = StringBuilder()
+        val tail = ArrayDeque<String>()
+        var budget = LEDGER_GROUP_KEYS_CHARS
+        var lo = 0
+        var hi = run.size - 1
+        // Alternate from both ends so the first and the latest calls both stay visible.
+        while (lo <= hi) {
+            val k = run[lo].key
+            if (k.length + 2 > budget) break
+            head.append(if (head.isEmpty()) "" else ", ").append(k); budget -= k.length + 2; lo++
+            if (lo > hi) break
+            val t = run[hi].key
+            if (t.length + 2 > budget) break
+            tail.addFirst(t); budget -= t.length + 2; hi--
+        }
+        val skipped = hi - lo + 1
+        buildString {
+            append(head)
+            if (skipped > 0) append(", … (+$skipped)")
+            tail.forEach { append(", ").append(it) }
+        }
+    }
+    val byOutcome = run.groupingBy { it.outcome }.eachCount()
+    val summary = byOutcome.entries.joinToString(", ") { "${it.value} ${it.key}" }
+    val notOk = run.filter { it.outcome != "ok" }.take(3).joinToString(", ") { it.key }
+    return "- ${run.first().name} x${run.size}: $keyText -> $summary" + if (notOk.isEmpty()) "" else " ($notOk)"
+}
+
+private val ERROR_KEY = Regex("^\\s*\\{\\s*\"(error|errorCode|error_code)\"\\s*:")
+
+/** Tool failures in this app are JSON envelopes whose first key is `error` (or `errorCode`). */
+internal fun looksLikeToolError(result: String): Boolean = ERROR_KEY.containsMatchIn(result.take(64))
 
 private val TRANSCRIPT_TAG = Regex("</?(tool_call|tool_result)>", RegexOption.IGNORE_CASE)
 private val ROLE_LINE = Regex("(?m)^(\\s*)(user|model|tool|system)(\\s*):", RegexOption.IGNORE_CASE)
@@ -271,13 +446,16 @@ private fun words(text: String): Set<String> =
     WORD.findAll(text.lowercase()).map { it.value }.toSet()
 
 /**
- * Stable ranking: tools used in the conversation, then by word overlap with the task
- * (tool names split on '_'), then original order. Pure lexical — no embeddings on-device.
+ * Stable ranking: read_tool_output first (the runtime adds it only when a clipped result
+ * points to it, so it must never be the one left out), tools used in the conversation, then
+ * by word overlap with the task (tool names split on '_'), then original order. Pure
+ * lexical — no embeddings on-device.
  */
 internal fun rankToolsForTask(tools: List<Tool>, history: List<UIMessage>, taskText: String): List<Tool> {
     val used = history.flatMap { m -> m.parts.filterIsInstance<UIMessagePart.Tool>().map { it.toolName } }.toSet()
     val task = words(taskText)
     fun score(tool: Tool): Int {
+        if (tool.name == RuntimeTools.READ_TOOL_OUTPUT) return 2000
         if (tool.name in used) return 1000
         val toolWords = words(tool.name.replace('_', ' ') + " " + tool.description.lineSequence().firstOrNull().orEmpty())
         return toolWords.count { it in task }
