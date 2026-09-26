@@ -7,7 +7,7 @@ Debug APK for the Vivo X300. Values read from the build files on 2026-09-25. On 
 ## Project facts
 | Item | Value | Source |
 |---|---|---|
-| App module | `:app` (applicationId `excp.rikkahub`, debug → `excp.rikkahub.debug`) | `app/build.gradle.kts` |
+| App module | `:app` (applicationId `it.menesini.rikkamene`, debug → `it.menesini.rikkamene.debug`) | `app/build.gradle.kts` |
 | Variant | `debug` (no product flavors; debug keystore, no signing setup needed) | |
 | Gradle wrapper | 9.5.0 | `gradle/wrapper/gradle-wrapper.properties` |
 | AGP / Kotlin / KSP | 9.3.1 / 2.4.10 / 2.3.10 | `gradle/libs.versions.toml` |
@@ -41,6 +41,17 @@ Debug builds are signed with `app/debug.keystore` (committed, debug only, passwo
 SHA-256 239d6297…af03), so APKs from GitHub Actions, the sandbox and the Dell all install over
 each other. The debug app is labelled **Rikka-mene** (`app/src/debug/res/values*/strings.xml`).
 Debug APKs signed before this key (release apk-f5f3010-run2 and older) must be uninstalled once.
+
+## Release (official) builds
+Package `it.menesini.rikkamene`, label **Rikka-mene** (`app/src/release/res`), R8 on.
+The release key is never in the repository. It reaches the build through the environment
+(`RELEASE_STORE_FILE`, `RELEASE_STORE_PASSWORD`, `RELEASE_KEY_ALIAS`, `RELEASE_KEY_PASSWORD`) or,
+on a local machine, through `local.properties` (`storeFile`, `storePassword`, `keyAlias`,
+`keyPassword`). `.github/workflows/release.yml` writes it from the repository secrets
+`RIKKAMENE_KEYSTORE_B64` and `RIKKAMENE_RELEASE_PASS` and publishes release `v<versionName>`
+when a push to master carries `[release]` in its commit message (or by hand). Every release
+must raise `versionCode` and `versionName`; every one must be signed with the same key, or it
+will not install over the previous one. Keep an offline backup of the keystore and password.
 
 ## Output
 `app/build/outputs/apk/debug/`

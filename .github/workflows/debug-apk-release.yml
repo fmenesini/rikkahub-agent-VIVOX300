@@ -71,4 +71,4 @@ jobs:
           gh release create "$tag" "$arm" "$arm.sha256" \
             --target "${GITHUB_SHA}" --prerelease \
             --title "Debug APK ${tag}" \
-            --notes "Debug build of ${GITHUB_SHA::7} for the Vivo X300 (arm64-v8a, package excp.rikkahub.debug). Debug-signed, not for distribution. Install: adb install -r ${arm}"
+            --notes "Debug build of ${GITHUB_SHA::7} for the Vivo X300 (arm64-v8a, package it.menesini.rikkamene.debug). Debug-signed, not for distribution. Install: adb install -r ${arm}"

@@ -1,0 +1,116 @@
+# Official Rikka-mene release: builds the release APK (R8), signs it with the release key and
+# publishes a GitHub release tagged v<versionName>. Runs on a push to master (e.g. a PR merge)
+# or to a claude/* branch whose head commit message contains "[release]", or by hand.
+#
+# Signing: no key material lives in the repository. Two repository secrets
+# (Settings → Secrets and variables → Actions) hold it:
+#   RIKKAMENE_KEYSTORE_B64  the release keystore (PKCS12), base64-encoded
+#   RIKKAMENE_RELEASE_PASS  its password, also the password of the key "rikkamene"
+# Without them the job stops before building: an unsigned or differently signed APK could
+# not update the installed app.
+name: Release
+
+on:
+  push:
+    branches: ["master", "claude/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.head_commit.message, '[release]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Release keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.RIKKAMENE_KEYSTORE_B64 }}
+          PASS: ${{ secrets.RIKKAMENE_RELEASE_PASS }}
+        run: |
+          set -euo pipefail
+          if [ -z "${KEYSTORE_B64}" ] || [ -z "${PASS}" ]; then
+            echo "::error::Secrets RIKKAMENE_KEYSTORE_B64 and RIKKAMENE_RELEASE_PASS must be set (Settings → Secrets and variables → Actions)."
+            exit 1
+          fi
+          printf '%s' "$KEYSTORE_B64" | base64 -d > app/release-keystore.jks
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      # See debug-apk-release.yml: the runner's own sdkmanager, not setup-android.
+      - name: Android SDK packages
+        run: |
+          set -euo pipefail
+          sdkm="$(ls -d "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager | sort -V | tail -1)"
+          yes | "$sdkm" --licenses > /dev/null || true
+          "$sdkm" --install "platform-tools" "platforms;android-37.0" "cmake;3.22.1"
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: oven-sh/setup-bun@v2
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Version
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          name="$(sed -n 's/^ *versionName = "\(.*\)"/\1/p' app/build.gradle.kts)"
+          code="$(sed -n 's/^ *versionCode = \([0-9]*\)$/\1/p' app/build.gradle.kts)"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          if gh release view "v$name" > /dev/null 2>&1; then
+            echo "::error::Release v$name already exists: bump versionName and versionCode first."
+            exit 1
+          fi
+
+      - name: Build release APK
+        env:
+          LANG: C.UTF-8
+          LC_ALL: C.UTF-8
+          RELEASE_STORE_FILE: release-keystore.jks
+          RELEASE_STORE_PASSWORD: ${{ secrets.RIKKAMENE_RELEASE_PASS }}
+          RELEASE_KEY_ALIAS: rikkamene
+          RELEASE_KEY_PASSWORD: ${{ secrets.RIKKAMENE_RELEASE_PASS }}
+        run: ./gradlew :app:assembleRelease --no-daemon --console=plain
+
+      - name: Verify signature
+        run: |
+          set -euo pipefail
+          apksigner="$(ls -d "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)"
+          "$apksigner" verify --print-certs app/build/outputs/apk/release/app-arm64-v8a-release.apk | tee certs.txt
+          grep -q "CN=Rikka-mene" certs.txt
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NAME: ${{ steps.version.outputs.name }}
+          CODE: ${{ steps.version.outputs.code }}
+        run: |
+          set -euo pipefail
+          arm="Rikka-mene-${NAME}-arm64-v8a.apk"
+          cp app/build/outputs/apk/release/app-arm64-v8a-release.apk "$arm"
+          sha256sum "$arm" > "$arm.sha256"
+          gh release create "v${NAME}" "$arm" "$arm.sha256" \
+            --target "${GITHUB_SHA}" --latest \
+            --title "Rikka-mene ${NAME}" \
+            --notes "Rikka-mene ${NAME} (versionCode ${CODE}), package it.menesini.rikkamene, arm64-v8a. Signed with the Rikka-mene release key: later versions install over this one. Built from ${GITHUB_SHA::7}."
+
+      - name: Remove keystore
+        if: always()
+        run: rm -f app/release-keystore.jks

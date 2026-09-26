@@ -366,6 +366,17 @@ llama.cpp, any model, not only Gemma) are the opt-in path for heavy tasks, conte
 - Gradle: ai 336, local-llm 128, llama-cpp 70, app 1746 — all green; assembleDebug OK.
   [REQUIRES VIVO VALIDATION] E4B load, prefill tok/s at 16k/32k, heat, RAM with AICore idle.
 
+## Release 1.0.0 (2026-09-26) — official build
+- Decisions (user): new app identity `it.menesini.rikkamene`, name Rikka-mene, version 1.0.0
+  (versionCode 1), coexisting with other RikkaHub installs; PR + merge into master.
+- The repository is PUBLIC: the release key is never committed, not even encrypted. It comes
+  from repository secrets `RIKKAMENE_KEYSTORE_B64` + `RIKKAMENE_RELEASE_PASS`
+  (`.github/workflows/release.yml`, trigger: `[release]` in the head commit message on master
+  or claude/*, or by hand). Key: PKCS12, alias `rikkamene`, RSA 4096, CN=Rikka-mene,
+  SHA-256 88:04:EB:82…B2:1C. Losing it = no more updates over the installed app.
+- Debug builds now use package `it.menesini.rikkamene.debug`: the old `excp.rikkahub.debug`
+  beta does not update any more (uninstall it after moving data via backup/restore).
+
 ## Next steps (priority order)
 1. [DONE] Build + install on the Vivo; AICore agent loop with web_fetch validated (runs 1-3).
    Next on AICore: multi-step tasks (3+ tools), error recovery, loop behaviour on device.
