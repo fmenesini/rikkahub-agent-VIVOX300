@@ -77,6 +77,7 @@ APPT="$ROOT/app/src/test/java/me/rerere/rikkahub"
 SRC+=( "$APP"/data/ai/tools/local/PathSafetyGuard.kt "$APP"/data/ai/net/GuardedDns.kt "$APP"/data/ai/tools/HardlineCommandGuard.kt "$APP"/data/ai/tools/ToolApprovalDefaults.kt "$APP"/data/ai/tools/HeadlessConversations.kt "$APP"/data/ai/tools/ToolOutputTools.kt )
 TESTS=(
   "$T"/provider/providers/AICorePromptTest.kt
+  "$T"/core/ContextCompactorTest.kt
   "$ROOT"/workspace/src/test/java/me/rerere/workspace/WorkspaceSymlinkEscapeTest.kt
   "$APPT"/data/ai/tools/local/PathSafetyGuardTest.kt
   "$APPT"/data/ai/tools/local/PathSafetyGuardDevicePathsTest.kt
@@ -93,6 +94,7 @@ TESTS=(
 [ -n "$(find "$OUT" -name 'AICorePromptTest*.class' -print -quit)" ] || { echo "compile failed"; exit 1; }
 RUN=(java -cp "$OUT:$CP:$K/lib/kotlin-stdlib.jar")
 "${RUN[@]}" org.junit.runner.JUnitCore me.rerere.ai.provider.providers.AICorePromptTest \
+  me.rerere.ai.core.ContextCompactorTest \
   me.rerere.workspace.WorkspaceSymlinkEscapeTest \
   me.rerere.rikkahub.data.ai.tools.local.PathSafetyGuardTest \
   me.rerere.rikkahub.data.ai.tools.local.PathSafetyGuardDevicePathsTest \

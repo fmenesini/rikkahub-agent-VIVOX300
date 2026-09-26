@@ -134,8 +134,8 @@ private const val LEDGER_MAX_TOKENS = 360
 private const val LEDGER_INPUT_CHARS = 80
 private const val LEDGER_KEY_CHARS = 40
 private const val LEDGER_GROUP_KEYS_CHARS = 240
-private const val LEDGER_NOTE_CHARS = 200
-private const val NOTE = "note"
+internal const val LEDGER_NOTE_CHARS = 200
+internal const val LEDGER_NOTE = "note"
 
 /**
  * One piece of the flattened transcript. [ledger] is the record kept for a tool call when
@@ -146,10 +146,10 @@ private class PromptUnit(val role: String, val text: String, val pinned: Boolean
 
 /**
  * What the ledger remembers of a dropped unit: a tool call ([key] is its main argument
- * value) or, with name [NOTE], text the model wrote during the current task (its working
+ * value) or, with name [LEDGER_NOTE], text the model wrote during the current task (its working
  * notes: conclusions drawn from results that are no longer in the prompt).
  */
-private class LedgerEntry(val name: String, val args: String, val key: String, val outcome: String, val ref: String)
+internal class LedgerEntry(val name: String, val args: String, val key: String, val outcome: String, val ref: String)
 
 /**
  * Builds the AICore request within a token budget. The history is flattened into units
@@ -224,7 +224,7 @@ internal fun buildAiCorePrompt(
             while (j < units.size && !kept[j]) {
                 val e = units[j].ledger
                 if (e != null) {
-                    if (e.name != first.name || e.name == NOTE) break
+                    if (e.name != first.name || e.name == LEDGER_NOTE) break
                     run += e
                     last = j
                 }
@@ -259,7 +259,7 @@ internal fun buildAiCorePrompt(
             for (j in gapStart until end) {
                 val line = ledgerLines[j] ?: continue
                 if (inLedger[j]) append(line).append('\n')
-                else if (units[j].ledger?.name != NOTE) unlisted += ledgerCalls[j]
+                else if (units[j].ledger?.name != LEDGER_NOTE) unlisted += ledgerCalls[j]
             }
             if (unlisted > 0) append("(+$unlisted older tool calls not listed)\n")
             lastRole = null
@@ -310,7 +310,7 @@ private fun flattenForAiCore(history: List<UIMessage>, taskIndex: Int, retrievab
                     val pinned = mi == taskIndex
                     // The model's own text after the task started is its working notes.
                     val note = if (mi > taskIndex && message.role == MessageRole.ASSISTANT) {
-                        LedgerEntry(NOTE, "", "", "", shorten(neutralizeTranscriptMarkers(text).replace('\n', ' '), LEDGER_NOTE_CHARS))
+                        LedgerEntry(LEDGER_NOTE, "", "", "", shorten(neutralizeTranscriptMarkers(text).replace('\n', ' '), LEDGER_NOTE_CHARS))
                     } else null
                     out += PromptUnit(role, clipMiddle(text, if (pinned) TASK_USER_CHARS else OTHER_TEXT_CHARS), pinned, note)
                 }
@@ -351,7 +351,7 @@ private fun flattenForAiCore(history: List<UIMessage>, taskIndex: Int, retrievab
  * runtime can serve it) the id to read its full result again. No result text: the ledger only
  * has to stop the model from redoing work, the content itself stays retrievable.
  */
-private fun ledgerEntry(part: UIMessagePart.Tool, result: String, retrievable: Boolean): LedgerEntry {
+internal fun ledgerEntry(part: UIMessagePart.Tool, result: String, retrievable: Boolean): LedgerEntry {
     val args = neutralizeTranscriptMarkers(part.input.ifBlank { "{}" }).replace('\n', ' ')
     val outcome = when {
         part.approvalState is ToolApprovalState.Denied -> "denied"
@@ -367,15 +367,15 @@ private fun ledgerEntry(part: UIMessagePart.Tool, result: String, retrievable: B
     return LedgerEntry(part.toolName, shorten(args, LEDGER_INPUT_CHARS), shorten(key, LEDGER_KEY_CHARS), outcome, ref)
 }
 
-private fun shorten(s: String, max: Int) = if (s.length <= max) s else s.take(max - 1) + "…"
+internal fun shorten(s: String, max: Int) = if (s.length <= max) s else s.take(max - 1) + "…"
 
 /**
  * `- name {args} -> ok [id=…]` for a single call; for a run of calls to one tool:
  * `- name x12: key1, key2, … -> 11 ok, 1 error (key7)`, keys clipped in the middle.
  */
-private fun renderLedgerRun(run: List<LedgerEntry>, clipKeys: Boolean): String {
+internal fun renderLedgerRun(run: List<LedgerEntry>, clipKeys: Boolean): String {
     val one = run.singleOrNull()
-    if (one != null && one.name == NOTE) return "- (your note) ${one.ref}"
+    if (one != null && one.name == LEDGER_NOTE) return "- (your note) ${one.ref}"
     if (one != null) return "- ${one.name} ${one.args} -> ${one.outcome}${one.ref}"
     val keys = run.joinToString(", ") { it.key }
     val keyText = if (!clipKeys || keys.length <= LEDGER_GROUP_KEYS_CHARS) keys else {

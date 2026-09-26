@@ -238,9 +238,9 @@ class LiteRtProvider(
         //
         // For LiteRT we therefore:
         //  - Use [buildCompactPrefix] (one-line `- name: desc` per tool, NO schemas).
-        //  - Drop bulky auto-loaded skill bodies — keep at most the first
-        //    [SYSTEM_MESSAGE_CHAR_BUDGET] chars of system text (room for the user's
-        //    custom system prompt + a short identity line, not for skill prose).
+        //  - Drop bulky auto-loaded skill bodies — keep at most the plan's system share
+        //    (500 chars on a 4k model, up to 6000 on large contexts): room for the user's
+        //    custom system prompt + a short identity line, not for skill prose.
         //
         // A 1.5B model can't usefully consume agent-core's persona docs anyway — the
         // model lacks the capacity to follow that level of instruction.
@@ -251,8 +251,11 @@ class LiteRtProvider(
             }
             .filter { it.isNotBlank() }
             .joinToString("\n\n")
-        val trimmedSystemTexts = if (systemTextsRaw.length > SYSTEM_MESSAGE_CHAR_BUDGET) {
-            systemTextsRaw.take(SYSTEM_MESSAGE_CHAR_BUDGET) + "\n…(truncated for local model context)"
+        // Every prompt share scales with the engine's context (see LocalContextBudget): a 4k
+        // model keeps the old tight caps, a 16-32k model gets room to actually use.
+        val budgetPlan = me.rerere.locallm.LocalContextBudget.plan(effectiveMaxNumTokens)
+        val trimmedSystemTexts = if (systemTextsRaw.length > budgetPlan.systemChars) {
+            systemTextsRaw.take(budgetPlan.systemChars) + "\n…(truncated for local model context)"
         } else {
             systemTextsRaw
         }
@@ -276,7 +279,7 @@ class LiteRtProvider(
         // differ by 8x on the Gemma 4 entries. A tool that does not fit is skipped rather
         // than truncated: half a JSON schema would render a malformed declaration.
         val contextTokens = effectiveMaxNumTokens
-        val toolCharBudget = toolDeclarationCharBudget(contextTokens)
+        val toolCharBudget = budgetPlan.toolChars
         var toolCharsUsed = 0
         val droppedTools = mutableListOf<String>()
         val declarations = params.tools.mapNotNull { tool ->
@@ -325,15 +328,26 @@ class LiteRtProvider(
         // TOOL-role messages are dropped here: their content is already represented inline
         // in the immediately-preceding ASSISTANT message's Tool part output.
         //
-        // Trimming: drop the oldest turns one at a time until the cold render fits under
-        // HISTORY_CHAR_BUDGET. A trimmed list is no longer a forward-only extension of what
+        // Reshaping (compaction or the last-resort drop below): a reshaped list is no longer a forward-only extension of what
         // the Conversation already processed, so the runtime correctly falls back to a cold
         // rebuild for that turn — exactly the behaviour we want when history is reshaped.
-        var trimmed = messages.filter {
-            it.role != MessageRole.SYSTEM && it.role != MessageRole.TOOL
-        }
+        // History goes through the shared context manager first: it cuts INSIDE messages
+        // (a running tool loop is one assistant message, which whole-message trimming could
+        // never shorten), keeps the task and the newest steps, clips old results with
+        // read_tool_output hints and leaves a ledger of dropped steps.
+        val historyTokens = me.rerere.locallm.LocalContextBudget.historyTokens(
+            budgetPlan, trimmedSystemTexts.length, toolCharsUsed,
+        )
+        val compacted = me.rerere.ai.core.ContextCompactor.compact(
+            messages.filter { it.role != MessageRole.SYSTEM && it.role != MessageRole.TOOL },
+            historyTokens,
+            retrievable = params.tools.any { it.name == me.rerere.ai.core.RuntimeTools.READ_TOOL_OUTPUT },
+        )
+        var trimmed = compacted.messages
         var coldBlob = renderColdBlob(trimmed)
-        while (coldBlob.length > HISTORY_CHAR_BUDGET && trimmed.size > 1) {
+        // Last-resort guard on the rendered size (template markers are not in the estimate).
+        val historyCharCap = historyTokens * me.rerere.locallm.LocalContextBudget.SAFE_CHARS_PER_TOKEN
+        while (coldBlob.length > historyCharCap && trimmed.size > 1) {
             trimmed = trimmed.drop(1)
             coldBlob = renderColdBlob(trimmed)
         }
@@ -347,7 +361,9 @@ class LiteRtProvider(
             TAG,
             "prefill budget: system=${combinedSystem.length} tools=$toolCharsUsed " +
                 "history=${coldBlob.length} total=${prefillChars}c " +
-                "(~${prefillChars / CHARS_PER_TOKEN}t of ${contextTokens}t)",
+                "(~${prefillChars / me.rerere.locallm.LocalContextBudget.SAFE_CHARS_PER_TOKEN}t of ${contextTokens}t, " +
+                "output reserve ${budgetPlan.outputReserveTokens}t) " +
+                "compacted: dropped=${compacted.droppedParts} clipped=${compacted.clippedParts}",
         )
 
         // Check the persisted vision-unavailable flag. If a prior load fell back to
@@ -757,35 +773,10 @@ class LiteRtProvider(
             "[Note: this model's vision encoder is unavailable on this device, so attached " +
                 "images were not analysed. Replying from text only.]\n\n"
 
-        /** Hard char-cap for the joined SYSTEM-message text. Tight on purpose: we
-         *  want the user's actual system prompt ("You are X") to land, but NOT
-         *  agent-core's auto-loaded skill body (~3-5k tokens of persona + tool
-         *  docs that small models can't usefully consume). 500 chars ≈ 125 tokens. */
-        private const val SYSTEM_MESSAGE_CHAR_BUDGET = 500
 
-        /** Hard char-cap for the rendered ChatML history. ~3000 chars ≈ 750 tokens. */
-        private const val HISTORY_CHAR_BUDGET = 3000
-
-        /** Rough chars-per-token used to turn a model's token context into a char budget. */
-        private const val CHARS_PER_TOKEN = 4
-
-        /**
-         * Char budget for the joined native tool declarations, scaled to the model's
-         * context the way the system prompt and history already are.
-         *
-         * Declarations are prompt text: the chat template renders every one of them ahead
-         * of the conversation. Leaving them uncapped let an assistant with a large enabled
-         * tool set push tens of thousands of characters of JSON schema into a model whose
-         * whole context is a few thousand tokens, which is far more than the 3.5k chars
-         * system + history are allowed between them.
-         *
-         * Half the context is reserved for the response; the system prompt and history
-         * budgets come off the input half first, and the declarations get what is left.
-         */
+        /** Char budget for the native tool declarations; see [me.rerere.locallm.LocalContextBudget]. */
         internal fun toolDeclarationCharBudget(contextTokens: Int): Int =
-            (contextTokens * CHARS_PER_TOKEN / 2) -
-                SYSTEM_MESSAGE_CHAR_BUDGET -
-                HISTORY_CHAR_BUDGET
+            me.rerere.locallm.LocalContextBudget.plan(contextTokens).toolChars
 
         /**
          * The context the engine is actually configured with: what was asked for, clamped to
@@ -794,6 +785,6 @@ class LiteRtProvider(
          * engine that receives it.
          */
         internal fun engineContextTokens(requestedMaxTokens: Int, contextCeiling: Int?): Int =
-            contextCeiling?.let { minOf(requestedMaxTokens, it) } ?: requestedMaxTokens
+            me.rerere.locallm.LocalContextBudget.engineContextTokens(requestedMaxTokens, contextCeiling)
     }
 }

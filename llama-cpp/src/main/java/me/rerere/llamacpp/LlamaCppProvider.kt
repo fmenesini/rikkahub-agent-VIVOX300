@@ -285,9 +285,27 @@ class LlamaCppProvider(
             // append-only merge.
             val textId = "$streamId-text"
             val reasoningId = "$streamId-reasoning"
-            // Trim history to the input half of the planned context before templating, so a
-            // long conversation drops its oldest turns instead of overflowing the prompt.
-            val trimmedMessages = ChatRequestMapper.trimToBudget(messages, runtime.inputBudgetBytes())
+            // Fit history to the input half of the planned context before templating. The
+            // shared context manager cuts inside messages (a running tool loop is one assistant
+            // message, which whole-turn trimming never shortens), keeps the task and newest
+            // steps, clips old results with read_tool_output hints and leaves a ledger of what
+            // was dropped. Whole-turn trimming stays as the last-resort guard.
+            val budgetBytes = runtime.inputBudgetBytes()
+            val compacted = me.rerere.ai.core.ContextCompactor.compact(
+                messages,
+                // Bytes -> the manager's conservative units (~3 chars per token).
+                tokenBudget = budgetBytes / 3,
+                retrievable = params.tools.any { it.name == me.rerere.ai.core.RuntimeTools.READ_TOOL_OUTPUT },
+            )
+            // runCatching: plain-JVM unit tests have no android.util.Log implementation.
+            runCatching {
+                android.util.Log.i(
+                    "LlamaCppProvider",
+                    "history budget ${budgetBytes}B: est=${compacted.estimatedTokens}t " +
+                        "dropped=${compacted.droppedParts} clipped=${compacted.clippedParts}",
+                )
+            }
+            val trimmedMessages = ChatRequestMapper.trimToBudget(compacted.messages, budgetBytes)
             val appliedTemplateJson = runtime.applyTemplate(
                 ChatRequestMapper.toRequestJson(trimmedMessages, params.tools)
             )

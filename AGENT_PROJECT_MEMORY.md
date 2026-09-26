@@ -303,6 +303,26 @@ at char ~16k of the article text: Paolo Lipparelli, 1645-1650).
   [REQUIRES VIVO VALIDATION] re-run the same prompt on the next APK.
 - Minor: Nano answered in English to an Italian prompt on the first turn.
 
+## Sprint 6 (2026-09-26) — one context manager for every on-device runtime
+Decision (user): AICore stays primary and is used to its limits; local models (LiteRT-LM or
+llama.cpp, any model, not only Gemma) are the opt-in path for heavy tasks, context capped at
+32k; the same context management applies app-wide.
+- [CONFIRMED, code] LiteRT capped history at 3000 chars (~750 t) and system at 500 whatever
+  the engine size, and trimmed by WHOLE messages only: a running tool loop is one assistant
+  message, so its tool results went to the engine uncut (a 32 KB web_fetch ≈ 8k tokens) — past
+  the engine context this faults the native executor (SIGSEGV). llama.cpp trimToBudget had the
+  same whole-turn limitation. [MITIGATED]
+- `ai/core/ContextCompactor`: the AICore rules (pinned task, newest-first, clip caps scaled to
+  the budget, read_tool_output resume hints, step ledger incl. model notes) on UIMessages, for
+  providers with their own templates. Used by LiteRtProvider and LlamaCppProvider (whole-turn
+  trim kept as last-resort guard). AICore keeps its own flat builder (device-validated).
+- `local-llm/LocalContextBudget`: engine context ≤ 32768; answer reserve ctx/4 (≤ 4096); system
+  ≤ 10% of input (500 chars on ≤ 4k); tools 35% (none under 2k ctx); history gets the rest.
+  Chars at 3/token (safe side: an overflow crashes natively). Gemma 4 E2B/E4B default 16384
+  (catalog), user override up to 32768 in Settings → Local · LiteRT → Max context.
+- Gradle: ai 336, local-llm 128, llama-cpp 70, app 1746 — all green; assembleDebug OK.
+  [REQUIRES VIVO VALIDATION] E4B load, prefill tok/s at 16k/32k, heat, RAM with AICore idle.
+
 ## Next steps (priority order)
 1. Build (`assembleDebug`) + Vivo checklist above (incl. Sprint 5); record results here.
 2. Use `countTokens`/`getTokenLimit` for exact budgeting once the API is checked against the AAR.

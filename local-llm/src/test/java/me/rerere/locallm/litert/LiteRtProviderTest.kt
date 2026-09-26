@@ -95,22 +95,27 @@ class LiteRtToolDeclarationBudgetTest {
 
     @Test
     fun `budget leaves room for system prompt and history`() {
-        // 4096t * 4 chars / 2 = 8192 input chars, minus the 500 + 3000 already committed.
-        assertEquals(4692, budget(4096))
+        // 4096t: 1024t reserved for the answer, (4096-1024)*3 = 9216 input chars; tools get
+        // 35% (3225), the 500-char system share and the history take the rest.
+        assertEquals(3225, budget(4096))
+        val plan = me.rerere.locallm.LocalContextBudget.plan(4096)
+        assertTrue(plan.systemChars + budget(4096) < plan.inputChars / 2)
     }
 
     @Test
     fun `budget scales with the model's context`() {
         assertTrue(
             "a 32k model must afford far more declarations than a 4k one",
-            budget(32768) > budget(4096) * 10,
+            // 8x, not the old 10x: that ratio came from subtracting fixed 500 + 3000 char
+            // caps from the 4k budget; the plan now scales every share with the context.
+            budget(32768) > budget(4096) * 8,
         )
     }
 
     @Test
     fun `budget goes non-positive for a context too small to hold any tool`() {
-        // 1280t (qwen3 ekv1280) -> 2560 - 3500 < 0, so no tool is declared at all rather
-        // than one being forced in over budget.
+        // 1280t (qwen3 ekv1280) is below the 2048-token floor for tools, so no tool is
+        // declared at all rather than one being forced in over budget.
         assertTrue("tiny context yields no tool room", budget(1280) <= 0)
     }
 
@@ -166,11 +171,48 @@ class LiteRtEngineContextTokensTest {
     fun `the tool budget derived from the engine size never exceeds the engine`() {
         // The regression this guards: budget(ceiling) was handed to an engine sized at the
         // allocation, so the committed prefill could run past what the engine can hold.
-        val engine = LiteRtProvider.engineContextTokens(4096, 32768)
-        val committedChars = 500 + 3000 + LiteRtProvider.toolDeclarationCharBudget(engine)
-        assertTrue(
-            "prefill budget ${committedChars}c must fit the engine's ${engine}t",
-            committedChars <= engine * 4,
-        )
+        for (requested in listOf(1280, 2048, 4096, 16384, 32768, 65536)) {
+            val engine = LiteRtProvider.engineContextTokens(requested, 32768)
+            val plan = me.rerere.locallm.LocalContextBudget.plan(engine)
+            val history = me.rerere.locallm.LocalContextBudget.historyTokens(plan, plan.systemChars, plan.toolChars)
+            // Everything committed, in tokens at 3 chars/token, plus the answer reserve.
+            val committedTokens = (plan.systemChars + plan.toolChars) / 3 + history + plan.outputReserveTokens
+            assertTrue("requested $requested: ${committedTokens}t must fit the engine's ${engine}t", committedTokens <= engine)
+        }
+    }
+}
+
+class LocalContextBudgetTest {
+    private val B = me.rerere.locallm.LocalContextBudget
+
+    @Test
+    fun `no engine context above 32k, whatever is asked`() {
+        assertEquals(32768, B.engineContextTokens(131072, null))
+        assertEquals(32768, B.engineContextTokens(65536, 131072))
+        assertEquals(16384, B.engineContextTokens(16384, 32768))
+    }
+
+    @Test
+    fun `a 16k model gets many times the history of a 4k one`() {
+        fun history(ctx: Int) = B.plan(ctx).let { B.historyTokens(it, it.systemChars, 0) }
+        // Not 4x the context's 4x: the answer reserve grows too (1k -> 4k tokens).
+        assertTrue("${history(16384)} vs ${history(4096)}", history(16384) >= 3 * history(4096))
+        // The old fixed caps gave every model ~750 tokens of history.
+        assertTrue(history(4096) > 750)
+    }
+
+    @Test
+    fun `unused tool budget flows to the history`() {
+        val p = B.plan(16384)
+        assertTrue(B.historyTokens(p, 500, 0) > B.historyTokens(p, 500, p.toolChars))
+    }
+
+    @Test
+    fun `the answer always keeps a reserve`() {
+        for (ctx in listOf(512, 1280, 4096, 16384, 32768)) {
+            val p = B.plan(ctx)
+            assertTrue("ctx $ctx", p.outputReserveTokens in 1..4096)
+            assertTrue("ctx $ctx", p.inputChars > 0)
+        }
     }
 }
