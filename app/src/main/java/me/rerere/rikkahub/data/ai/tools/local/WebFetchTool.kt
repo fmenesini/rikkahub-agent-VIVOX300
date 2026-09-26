@@ -32,6 +32,22 @@ internal const val WEB_FETCH_EXTRACT_CAP = 32 * 1024
 
 internal enum class FetchExtract { RAW, ARTICLE, TEXT, LINKS, METADATA }
 
+/**
+ * Raw mode returns at most [WEB_FETCH_BODY_CAP] bytes, and on most HTML pages that is only the
+ * <head> (scripts, config): the text is not in it, and a bigger max_chars cannot help because
+ * raw is capped there. Small models then page through markup looking for prose that was never
+ * fetched. The envelope says so, ahead of the body, where a clipped prompt still shows it.
+ */
+internal fun rawHtmlTruncationHint(contentType: String?, body: String, truncated: Boolean): String? {
+    if (!truncated) return null
+    val head = body.trimStart().take(64).lowercase()
+    val html = contentType?.contains("html", ignoreCase = true) == true ||
+        head.startsWith("<!doctype html") || head.startsWith("<html")
+    if (!html) return null
+    return "raw HTML cut at $WEB_FETCH_BODY_CAP bytes, so the page text is not in body. " +
+        "To read the page, call web_fetch again with extract_mode \"article\"."
+}
+
 internal fun parseExtractModeOrNull(raw: String?): FetchExtract? = when (raw?.trim()?.lowercase()) {
     null, "", "raw" -> FetchExtract.RAW
     "article" -> FetchExtract.ARTICLE
@@ -163,6 +179,12 @@ fun webFetchTool(client: OkHttpClient): Tool = Tool(
                 })
                 put("extract_mode", buildJsonObject {
                     put("type", "string")
+                    // article first: small models tend to pick the first listed value.
+                    put("enum", kotlinx.serialization.json.buildJsonArray {
+                        listOf("article", "raw", "text", "links", "metadata").forEach {
+                            add(kotlinx.serialization.json.JsonPrimitive(it))
+                        }
+                    })
                     put("description", "raw (default), article (main prose, use to read a page), text, links, or metadata")
                 })
                 put("max_chars", buildJsonObject {
@@ -302,6 +324,7 @@ fun webFetchTool(client: OkHttpClient): Tool = Tool(
                             put("ok", resp.isSuccessful)
                             put("final_url", resp.request.url.toString())
                             put("extract_mode", "raw")
+                            rawHtmlTruncationHint(contentType, decoded, bodyTruncated)?.let { put("hint", it) }
                             put("body", decoded)
                             put("body_truncated", bodyTruncated)
                             headerMap?.let { h ->

@@ -286,6 +286,23 @@ compiles against the real AAR. Sandbox build recipe: SDK platforms;android-37.0 
   [REQUIRES VIVO VALIDATION] whether countTokens includes the prefix/template, its latency,
   and what getTokenLimit returns on E4B: logcat `getTokenLimit=` and `counted=`.
 
+## Vivo run 1 (2026-09-26, APK apk-f5f3010-run2, Gemini Nano FULL via AICore) — user screenshots
+Task: "web_fetch it.wikipedia.org/wiki/Mura_di_Lucca, who completed the walls and when" (answer
+at char ~16k of the article text: Paolo Lipparelli, 1645-1650).
+- [CONFIRMED on Vivo] App installs and runs, AICore chat works, the agent loop executes tools and
+  reuses results; read_tool_output is offered, runs WITHOUT approval card, pages correctly
+  (offsets 4546→6046→7546), no crash, no infinite loop. Nano gives up and says so.
+- [CONFIRMED on Vivo] Task failed: Nano called web_fetch 3× with extract_mode "raw" (also
+  max_chars 20000 / 1048576). Raw is hard-capped at 8192 bytes → body_truncated=true and only
+  the page <head> (JS config); the article text was never fetched. Cause: the AICore tool line
+  showed only arg NAMES + first description line, so Nano never saw that 'article' exists.
+- [MITIGATED, host+Gradle] (1) AICore tool lines show enum values (`extract_mode=article|raw|…`,
+  ≤6 values); web_fetch extract_mode now has an enum, article first. (2) web_fetch raw + HTML +
+  truncated → `hint` field before body: call again with extract_mode "article". (3)
+  read_tool_output notes when the source tool itself truncated its output.
+  [REQUIRES VIVO VALIDATION] re-run the same prompt on the next APK.
+- Minor: Nano answered in English to an Italian prompt on the first turn.
+
 ## Next steps (priority order)
 1. Build (`assembleDebug`) + Vivo checklist above (incl. Sprint 5); record results here.
 2. Use `countTokens`/`getTokenLimit` for exact budgeting once the API is checked against the AAR.

@@ -192,6 +192,12 @@ internal fun readToolOutput(messages: List<UIMessage>, spillDir: File?, input: J
         full ?: inMessage
     } else inMessage
 
+    if (SOURCE_TRUNCATED.containsMatchIn(text)) {
+        val cut = "the tool that produced this output cut it itself (truncated=true): paging here " +
+            "cannot go past its end; call that tool again as its hint or next_start_index says"
+        note = if (note == null) cut else "$note; $cut"
+    }
+
     val query = args["query"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
     if (query.isNotEmpty()) {
         if (query.length < 2) return envelope("invalid_input", "query needs at least 2 characters")
@@ -203,6 +209,8 @@ internal fun readToolOutput(messages: List<UIMessage>, spillDir: File?, input: J
     }
     return ToolOutputStore.page(id, text, offset, note)
 }
+
+private val SOURCE_TRUNCATED = Regex("\"(body_)?truncated\"\\s*:\\s*true")
 
 private fun envelope(error: String, detail: String): String = buildJsonObject {
     put("error", error)

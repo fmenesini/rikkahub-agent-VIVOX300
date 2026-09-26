@@ -162,4 +162,14 @@ class ToolOutputToolsTest {
         // Its own results do not count, or it would keep offering itself.
         assertFalse(hasRetrievableToolOutput(chat(call("r1", "z".repeat(500), name = RuntimeTools.READ_TOOL_OUTPUT))))
     }
+
+    @Test
+    fun `reading an output its own tool truncated says so`() {
+        val cut = """{"status":200,"extract_mode":"raw","body":"<!DOCTYPE html>...","body_truncated":true}"""
+        val res = run(chat(call("w1", cut)), null, """{"id":"w1"}""")
+        assertTrue(res, res.contains("cut it itself"))
+        val whole = """{"status":200,"text":"hello","truncated":false}"""
+        assertFalse(run(chat(call("w2", whole)), null, """{"id":"w2"}""").contains("cut it itself"))
+    }
+
 }

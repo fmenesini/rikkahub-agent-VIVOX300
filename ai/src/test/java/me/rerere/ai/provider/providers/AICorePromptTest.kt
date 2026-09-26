@@ -358,4 +358,31 @@ class AICorePromptTest {
         assertEquals(null, calibratedAiCoreBudget(3600, 3600, 3500, 4000, droppedUnits = 5))
         assertEquals(null, calibratedAiCoreBudget(3600, 0, 100, 4000, droppedUnits = 5))
     }
+
+    @Test
+    fun `tool lines show allowed values so a small model does not guess them`() {
+        val t = Tool(
+            name = "web_fetch",
+            description = "Fetch a URL",
+            parameters = {
+                InputSchema.Obj(
+                    kotlinx.serialization.json.buildJsonObject {
+                        put("url", kotlinx.serialization.json.buildJsonObject { put("type", JsonPrimitive("string")) })
+                        put("extract_mode", kotlinx.serialization.json.buildJsonObject {
+                            put("type", JsonPrimitive("string"))
+                            put("enum", kotlinx.serialization.json.JsonArray(listOf("article", "raw", "text").map { JsonPrimitive(it) }))
+                        })
+                        put("level", kotlinx.serialization.json.buildJsonObject {
+                            put("enum", kotlinx.serialization.json.JsonArray((1..9).map { JsonPrimitive("v$it") }))
+                        })
+                    },
+                    required = listOf("url"),
+                )
+            },
+            execute = { emptyList() },
+        )
+        // Too many values (level) are left out rather than bloating the tool list.
+        assertEquals("- web_fetch(url*, extract_mode=article|raw|text, level): Fetch a URL", aiCoreToolLine(t))
+    }
+
 }

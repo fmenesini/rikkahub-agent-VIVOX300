@@ -173,4 +173,24 @@ class WebFetchToolTest {
         assertEquals(null, without["headers"])
         assertTrue(with["headers"]!!.jsonObject.containsKey("x-a"))
     }
+
+    @Test fun `truncated raw HTML tells the model to use article mode`() {
+        val hint = rawHtmlTruncationHint("text/html; charset=UTF-8", "<!DOCTYPE html><html><head>", truncated = true)
+        assertTrue(hint!!.contains("extract_mode \"article\""))
+        // Also without a content type, from the markup itself.
+        assertTrue(rawHtmlTruncationHint(null, "  <html lang=it>", truncated = true) != null)
+    }
+
+    @Test fun `no hint when the body is whole or not HTML`() {
+        assertEquals(null, rawHtmlTruncationHint("text/html", "<html></html>", truncated = false))
+        assertEquals(null, rawHtmlTruncationHint("application/json", "{\"a\":1}", truncated = true))
+    }
+
+    @Test fun `extract_mode lists its values with article first`() {
+        val schema = tool.parameters() as me.rerere.ai.core.InputSchema.Obj
+        val values = (schema.properties["extract_mode"]!!.jsonObject["enum"] as kotlinx.serialization.json.JsonArray)
+            .map { it.jsonPrimitive.content }
+        assertEquals(listOf("article", "raw", "text", "links", "metadata"), values)
+    }
+
 }

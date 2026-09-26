@@ -473,10 +473,24 @@ internal fun buildAiCoreSystemPrefix(
 internal fun aiCoreToolLine(tool: Tool): String {
     val schema = runCatching { tool.parameters() }.getOrNull() as? InputSchema.Obj
     val required = schema?.required.orEmpty().toSet()
-    val args = schema?.properties?.keys?.joinToString(", ") { if (it in required) "$it*" else it }.orEmpty()
+    // Allowed values are shown (name=a|b|c): a small model that only sees the argument name
+    // guesses the value, e.g. web_fetch extract_mode "raw" instead of "article".
+    val args = schema?.properties?.entries?.joinToString(", ") { (name, spec) ->
+        val values = ((spec as? JsonObject)?.get("enum") as? kotlinx.serialization.json.JsonArray)
+            ?.mapNotNull { (it as? JsonPrimitive)?.content }
+            ?.takeIf { it.isNotEmpty() && it.size <= MAX_ENUM_VALUES && it.all { v -> v.length <= MAX_ENUM_VALUE_CHARS } }
+        buildString {
+            append(name)
+            if (name in required) append('*')
+            if (values != null) append('=').append(values.joinToString("|"))
+        }
+    }.orEmpty()
     val desc = tool.description.lineSequence().firstOrNull()?.trim().orEmpty().take(100)
     return "- ${tool.name}($args): $desc"
 }
+
+private const val MAX_ENUM_VALUES = 6
+private const val MAX_ENUM_VALUE_CHARS = 16
 
 private val WORD = Regex("[\\p{L}\\p{N}]{3,}")
 
