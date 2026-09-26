@@ -114,3 +114,31 @@ internal fun OkHttpClient.withEgressGuard(allowPrivate: Boolean = false): OkHttp
             chain.proceed(chain.request())
         }
         .build()
+
+/**
+ * Why a model-driven WebView navigation to [url] must be refused, or null when it may go.
+ * The WebView has its own network stack, so [withEgressGuard] cannot cover it: this checks
+ * the host up front (literal IPs, `localhost`, and names resolving to private addresses).
+ * A later DNS answer could still differ (rebinding) — this closes the direct paths to the
+ * router, LAN services and RikkaHub's own local web server, not a determined resolver.
+ * DNS failures return null and are left to the WebView to report.
+ */
+internal fun browserTargetBlockReason(url: String, dns: Dns = Dns.SYSTEM): String? {
+    val trimmed = url.trim()
+    // java.net.URI leaves host null for names it deems invalid (e.g. `my_router`), which a
+    // WebView still resolves, so fall back to cutting the authority by hand.
+    val rawHost = runCatching { java.net.URI(trimmed).host }.getOrNull()
+        ?: trimmed.substringAfter("://", "").substringBefore('/').substringBefore('?')
+            .substringBefore('#').substringAfterLast('@')
+            .let { if (it.startsWith("[")) it.substringBefore(']') + "]" else it.substringBefore(':') }
+    val host = rawHost.trim('[', ']').lowercase().trimEnd('.').takeIf { it.isNotEmpty() } ?: return null
+    if (host == "localhost" || host.endsWith(".localhost") || hostIsBlockedLiteral(host)) {
+        return "blocked_private_address: $host"
+    }
+    return try {
+        GuardedDns(dns).lookup(host)
+        null
+    } catch (e: UnknownHostException) {
+        e.message?.takeIf { it.startsWith("blocked_private_address") }
+    }
+}

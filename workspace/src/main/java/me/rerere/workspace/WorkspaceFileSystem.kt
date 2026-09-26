@@ -93,7 +93,7 @@ class WorkspaceFileSystem(
         if (!file.exists()) return false
         return if (file.isDirectory) {
             require(recursive) { "Directory delete requires recursive = true" }
-            file.deleteRecursively()
+            file.deleteRecursivelyNoFollow()
         } else {
             file.delete()
         }
@@ -107,7 +107,7 @@ class WorkspaceFileSystem(
         if (targetFile.exists()) {
             require(overwrite) { "Target already exists: $target" }
             if (targetFile.isDirectory) {
-                targetFile.deleteRecursively()
+                targetFile.deleteRecursivelyNoFollow()
             } else {
                 targetFile.delete()
             }
@@ -153,7 +153,8 @@ class WorkspaceFileSystem(
                     sizeBytes = if (child.isFile) child.length() else 0L,
                     depth = depth,
                 )
-                if (child.isDirectory) walkDir(child, depth + 1)
+                // Never descend through a link: it can point outside the workspace.
+                if (child.isDirectory && !child.isSymlink) walkDir(child, depth + 1)
                 if (truncated) return
             }
         }

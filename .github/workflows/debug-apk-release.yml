@@ -1,0 +1,74 @@
+# Builds the debug APK and publishes it as a prerelease. Runs on a push to a claude/* branch
+# whose head commit message contains "[release-apk]" (agent sessions may push branches but
+# not tags), on a pushed "apk-*" tag, or by hand. Other pushes skip the job at once.
+# The APK is debug-signed: for testing on the Vivo X300, not for distribution.
+name: Debug APK release
+
+on:
+  push:
+    branches: ["claude/**"]
+    tags: ["apk-*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    if: >-
+      github.ref_type == 'tag' || github.event_name == 'workflow_dispatch' ||
+      contains(github.event.head_commit.message, '[release-apk]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # Gradle itself; the build's JetBrains 21 toolchain is fetched via foojay.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      # The runner image ships the Android SDK (ANDROID_HOME); setup-android@v3 is not used
+      # because it insists on the removed "tools" package and fails.
+      - name: Android SDK packages
+        run: |
+          set -euo pipefail
+          sdkm="$(ls -d "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager | sort -V | tail -1)"
+          echo "Using $sdkm (ANDROID_HOME=$ANDROID_HOME)"
+          yes | "$sdkm" --licenses > /dev/null || true
+          "$sdkm" --install "platform-tools" "platforms;android-37.0" "cmake;3.22.1"
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+
+      # :web runs bun install + pnpm run build on every preBuild.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: oven-sh/setup-bun@v2
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Build debug APK
+        env:
+          LANG: C.UTF-8
+          LC_ALL: C.UTF-8
+        run: ./gradlew :app:assembleDebug --no-daemon --console=plain
+
+      - name: Publish prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          if [ "${GITHUB_REF_TYPE}" != "tag" ]; then tag="apk-${GITHUB_SHA::7}-run${GITHUB_RUN_NUMBER}"; fi
+          dir=app/build/outputs/apk/debug
+          arm="rikkahub-agent-${tag}-arm64-v8a-debug.apk"
+          cp "$dir/app-arm64-v8a-debug.apk" "$arm"
+          sha256sum "$arm" > "$arm.sha256"
+          gh release create "$tag" "$arm" "$arm.sha256" \
+            --target "${GITHUB_SHA}" --prerelease \
+            --title "Debug APK ${tag}" \
+            --notes "Debug build of ${GITHUB_SHA::7} for the Vivo X300 (arm64-v8a, package it.menesini.rikkamene.debug). Debug-signed, not for distribution. Install: adb install -r ${arm}"

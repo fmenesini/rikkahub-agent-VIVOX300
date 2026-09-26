@@ -16,6 +16,7 @@ import me.rerere.rikkahub.data.db.entity.WorkspaceEntity
 import me.rerere.workspace.WorkspaceManager
 import org.koin.core.context.GlobalContext
 import java.io.File
+import me.rerere.workspace.deleteRecursivelyNoFollow
 
 /**
  * 通过 Storage Access Framework 将 workspace 的 files 目录暴露给系统文件管理器。
@@ -144,7 +145,7 @@ class WorkspaceDocumentsProvider : DocumentsProvider() {
         val target = parseDocId(documentId)
         require(!target.isRoot && target.relPath.isNotEmpty()) { "Cannot delete this document" }
         val file = resolveFile(target.root, target.relPath)
-        val ok = if (file.isDirectory) file.deleteRecursively() else file.delete()
+        val ok = if (file.isDirectory) file.deleteRecursivelyNoFollow() else file.delete()
         require(ok) { "Failed to delete: $documentId" }
         notifyChange(buildDocId(target.root, target.relPath.substringBeforeLast('/', "")))
     }
@@ -198,7 +199,7 @@ class WorkspaceDocumentsProvider : DocumentsProvider() {
         if (!srcFile.renameTo(dest)) {
             // 所有 workspace 都在应用私有目录下，renameTo 一般可行；失败则回退为复制+删除
             require(srcFile.copyRecursively(dest)) { "Failed to move: $sourceDocumentId" }
-            require(if (srcFile.isDirectory) srcFile.deleteRecursively() else srcFile.delete()) {
+            require(if (srcFile.isDirectory) srcFile.deleteRecursivelyNoFollow() else srcFile.delete()) {
                 "Failed to remove source after move: $sourceDocumentId"
             }
         }

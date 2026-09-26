@@ -37,4 +37,18 @@ class SearchToolsTest {
         assertEquals(listOf("url"), schema.required)
         assertTrue(schema.properties.containsKey("maxAgeHours"))
     }
+
+    @Test
+    fun `scrape_web is approval-gated at runtime, search_web is not`() {
+        // Regression: scrape_web was in ALWAYS_ASK but createSearchTools bypassed the
+        // mapping that turns the set into needsApproval, so it still ran unprompted.
+        val settings = Settings(
+            searchServices = listOf(SearchServiceOptions.ExaOptions()),
+            searchServiceSelected = 0,
+        )
+        val tools = createSearchTools(settings).associateBy { it.name }
+        val args = kotlinx.serialization.json.JsonObject(emptyMap())
+        assertTrue(tools.getValue("scrape_web").needsApproval(args))
+        assertEquals(false, tools.getValue("search_web").needsApproval(args))
+    }
 }

@@ -7,6 +7,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import me.rerere.rikkahub.data.datastore.SettingsStore
+import me.rerere.workspace.deleteRecursivelyNoFollow
 
 class SkillManager(
     private val context: Context,
@@ -160,7 +161,7 @@ class SkillManager(
         // lives inside this same directory, but bundledSkillNames() reads the asset list,
         // which is unaffected by the delete.
         val isBundled = name in bundledSkillNames()
-        val deleted = skillDir.deleteRecursively()
+        val deleted = skillDir.deleteRecursivelyNoFollow()
         if (deleted) {
             settingsStore.update { settings ->
                 settings.copy(
@@ -284,7 +285,7 @@ class SkillManager(
                 return false
             }
 
-            backupDir?.deleteRecursively()
+            backupDir?.deleteRecursivelyNoFollow()
             return true
         } catch (e: Exception) {
             Log.w(TAG, "saveSkillFilesAtomically: Failed to save $skillName", e)
@@ -294,10 +295,10 @@ class SkillManager(
             return false
         } finally {
             if (stagingDir.exists()) {
-                stagingDir.deleteRecursively()
+                stagingDir.deleteRecursivelyNoFollow()
             }
             if (backupDir?.exists() == true && targetDir.exists()) {
-                backupDir.deleteRecursively()
+                backupDir.deleteRecursivelyNoFollow()
             }
         }
     }
@@ -362,7 +363,7 @@ class SkillManager(
                 )
                 if (decision == SeedDecision.SKIP) continue
                 try {
-                    if (targetDir.exists()) targetDir.deleteRecursively()
+                    if (targetDir.exists()) targetDir.deleteRecursivelyNoFollow()
                     copyAssetSkill(assetRoot, skillName, targetDir)
                     sentinel.writeText(System.currentTimeMillis().toString())
                     coreVersionFile.writeText(bundledHash)
@@ -392,7 +393,7 @@ class SkillManager(
             )
             if (decision == SeedDecision.SKIP) continue
             try {
-                if (targetDir.exists()) targetDir.deleteRecursively()
+                if (targetDir.exists()) targetDir.deleteRecursivelyNoFollow()
                 copyAssetSkill(assetRoot, skillName, targetDir)
                 sentinel.writeText(System.currentTimeMillis().toString())
                 coreVersionFile.writeText(bundledHash)

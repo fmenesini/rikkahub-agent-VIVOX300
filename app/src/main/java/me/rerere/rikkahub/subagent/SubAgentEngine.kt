@@ -413,7 +413,13 @@ class SubAgentEngine(
         )
         conversationRepo.insertConversation(conv)
         chatService.initializeConversation(conv.id)
-        HeadlessConversations.mark(conv.id)
+        // Delegated, not fully headless: the sub-agent may only use tools its parent chat
+        // already allowed. A blanket mark() here turned one approved dispatch into
+        // auto-approval of every tool (egress, notifications, memory) for the sub-agent.
+        HeadlessConversations.markDelegated(
+            conv.id,
+            parentChatId?.let { runCatching { Uuid.parse(it) }.getOrNull() },
+        )
         try {
             // Prepend a wrap-up instruction. Some models naturally write a summary paragraph
             // after their tool-call sequence; others stop after the last tool result and emit

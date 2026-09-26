@@ -16,11 +16,12 @@ android {
     compileSdk = 37
 
     defaultConfig {
-        applicationId = "excp.rikkahub"
+        // Rikka-mene: its own package, so it installs next to upstream RikkaHub builds.
+        applicationId = "it.menesini.rikkamene"
         minSdk = 26
         targetSdk = 37
-        versionCode = 187
-        versionName = "2.5.1"
+        versionCode = 1
+        versionName = "1.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -42,36 +43,60 @@ android {
     }
 
     signingConfigs {
+        // Fixed debug key shared by every machine that builds (GitHub Actions, sandbox, Dell):
+        // with each machine's own random debug key, a new debug APK could not be installed
+        // over the previous one. Debug builds only (package it.menesini.rikkamene.debug).
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
         create("release") {
-            val localProperties = Properties()
-            val localPropertiesFile = rootProject.file("local.properties")
-
-            if (localPropertiesFile.exists()) {
-                localProperties.load(FileInputStream(localPropertiesFile))
-
-                val storeFilePath = localProperties.getProperty("storeFile")
-                val storePasswordValue = localProperties.getProperty("storePassword")
-                val keyAliasValue = localProperties.getProperty("keyAlias")
-                val keyPasswordValue = localProperties.getProperty("keyPassword")
-
-                if (storeFilePath != null && storePasswordValue != null &&
-                    keyAliasValue != null && keyPasswordValue != null
-                ) {
-                    storeFile = file(storeFilePath)
-                    storePassword = storePasswordValue
-                    keyAlias = keyAliasValue
-                    keyPassword = keyPasswordValue
-                } else {
-                    val missing = buildList {
-                        if (storeFilePath == null) add("storeFile")
-                        if (storePasswordValue == null) add("storePassword")
-                        if (keyAliasValue == null) add("keyAlias")
-                        if (keyPasswordValue == null) add("keyPassword")
-                    }
-                    logger.warn("Signing config: local.properties is missing $missing, release build will be unsigned")
-                }
+            // CI (GitHub Actions) passes the key through the environment; a local machine
+            // through local.properties. The keystore itself is never committed in clear.
+            val envStore = System.getenv("RELEASE_STORE_FILE")
+            val envPass = System.getenv("RELEASE_STORE_PASSWORD")
+            val envAlias = System.getenv("RELEASE_KEY_ALIAS")
+            val envKeyPass = System.getenv("RELEASE_KEY_PASSWORD")
+            if (!envStore.isNullOrBlank() && !envPass.isNullOrBlank() &&
+                !envAlias.isNullOrBlank() && !envKeyPass.isNullOrBlank()
+            ) {
+                storeFile = file(envStore)
+                storePassword = envPass
+                keyAlias = envAlias
+                keyPassword = envKeyPass
             } else {
-                logger.warn("Signing config: local.properties not found, release build will be unsigned")
+                val localProperties = Properties()
+                val localPropertiesFile = rootProject.file("local.properties")
+
+                if (localPropertiesFile.exists()) {
+                    localProperties.load(FileInputStream(localPropertiesFile))
+
+                    val storeFilePath = localProperties.getProperty("storeFile")
+                    val storePasswordValue = localProperties.getProperty("storePassword")
+                    val keyAliasValue = localProperties.getProperty("keyAlias")
+                    val keyPasswordValue = localProperties.getProperty("keyPassword")
+
+                    if (storeFilePath != null && storePasswordValue != null &&
+                        keyAliasValue != null && keyPasswordValue != null
+                    ) {
+                        storeFile = file(storeFilePath)
+                        storePassword = storePasswordValue
+                        keyAlias = keyAliasValue
+                        keyPassword = keyPasswordValue
+                    } else {
+                        val missing = buildList {
+                            if (storeFilePath == null) add("storeFile")
+                            if (storePasswordValue == null) add("storePassword")
+                            if (keyAliasValue == null) add("keyAlias")
+                            if (keyPasswordValue == null) add("keyPassword")
+                        }
+                        logger.warn("Signing config: local.properties is missing $missing, release build will be unsigned")
+                    }
+                } else {
+                    logger.warn("Signing config: local.properties not found, release build will be unsigned")
+                }
             }
         }
     }
@@ -88,6 +113,7 @@ android {
         }
         debug {
             applicationIdSuffix = ".debug"
+            signingConfig = signingConfigs.getByName("debug")
             buildConfigField("String", "VERSION_NAME", "\"${android.defaultConfig.versionName}\"")
             buildConfigField("String", "VERSION_CODE", "\"${android.defaultConfig.versionCode}\"")
             buildConfigField("String", "UPDATE_API_URL", "\"\"")

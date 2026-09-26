@@ -1630,23 +1630,37 @@ class ChatService(
                     // ask_user_unavailable. In a headless run (cron / sub-agent) there's nobody to
                     // answer, so it still auto-approves there and falls through to that graceful
                     // envelope instead of hanging the turn.
+                    //
+                    // The decision itself is ToolApprovalDefaults.autoApproves (host-tested):
+                    // NO_ALWAYS_ALLOW never auto-approves, and a sub-agent (DELEGATED) only
+                    // inherits its parent chat's grants instead of blanket auto-approval.
+                    val runKind = me.rerere.rikkahub.data.ai.tools.HeadlessConversations
+                        .runKind(conversationId)
                     if (toolName == "ask_user") {
-                        me.rerere.rikkahub.data.ai.tools.HeadlessConversations
-                            .shouldAutoApprove(conversationId)
+                        runKind != me.rerere.rikkahub.data.ai.tools.ToolApprovalDefaults.RunKind.INTERACTIVE
                     } else {
-                        toolApprovalPreferences.currentYolo() ||
-                            me.rerere.rikkahub.data.ai.tools.HeadlessConversations
-                                .shouldAutoApprove(conversationId) ||
-                            me.rerere.rikkahub.data.ai.tools.ToolApprovalAllowList
-                                .isAllowedForChat(conversationId, toolName) ||
+                        val parent = me.rerere.rikkahub.data.ai.tools.HeadlessConversations
+                            .delegationParent(conversationId)
+                        me.rerere.rikkahub.data.ai.tools.ToolApprovalDefaults.autoApproves(
+                            toolName = toolName,
+                            kind = runKind,
+                            yolo = toolApprovalPreferences.currentYolo(),
+                            grantedForChat = me.rerere.rikkahub.data.ai.tools.ToolApprovalAllowList
+                                .isAllowedForChat(conversationId, toolName),
+                            grantedForParentChat = parent != null &&
+                                me.rerere.rikkahub.data.ai.tools.ToolApprovalAllowList
+                                    .isAllowedForChat(parent, toolName),
                             // The global always-allow set must never auto-approve a
                             // workspace tool (it is per-app, not per-workspace) - this
                             // guard also covers any stale "workspace_" entry left over
                             // from before ToolApprovalPreferences started filtering them.
-                            (!isWorkspaceToolName(toolName) &&
-                                toolApprovalPreferences.current().contains(toolName))
+                            alwaysAllowed = !isWorkspaceToolName(toolName) &&
+                                toolApprovalPreferences.current().contains(toolName),
+                        )
                     }
                 },
+                approvalRunKind = me.rerere.rikkahub.data.ai.tools.HeadlessConversations
+                    .runKind(conversationId),
                 onAfterToolExecution = { generatedMessages ->
                     if (messageRange != null || !settings.enableAutoCompaction) {
                         null

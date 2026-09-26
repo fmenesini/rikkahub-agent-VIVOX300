@@ -17,7 +17,10 @@ import java.time.LocalDate
 import kotlin.time.Clock
 import kotlin.uuid.Uuid
 
-fun createSearchTools(settings: Settings): Set<Tool> {
+fun createSearchTools(settings: Settings): Set<Tool> = createSearchToolsUngated(settings)
+    .mapTo(LinkedHashSet(), ToolApprovalDefaults::applyTo)
+
+private fun createSearchToolsUngated(settings: Settings): Set<Tool> {
     return buildSet {
         add(
             Tool(

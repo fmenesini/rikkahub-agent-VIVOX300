@@ -48,6 +48,12 @@ object HeadlessConversations {
 
     private val ids: MutableSet<Uuid> = ConcurrentHashMap.newKeySet()
     private val autoApproveIds: MutableSet<Uuid> = ConcurrentHashMap.newKeySet()
+    // Sub-agent conversation -> parent conversation (null when the parent is unknown).
+    // In-memory only: a sub-agent restored after a process kill is not re-delegated, so it
+    // falls back to INTERACTIVE (prompts are visible if the user opens it) — never to
+    // blanket auto-approval.
+    private val delegatedParents: MutableMap<Uuid, Uuid> = ConcurrentHashMap()
+    private val NO_PARENT = Uuid.NIL
     @Volatile private var prefs: SharedPreferences? = null
 
     /**
@@ -97,9 +103,32 @@ object HeadlessConversations {
         persistIds()
     }
 
+    /**
+     * Mark a sub-agent conversation: browser-headless like [mark] (so the recursion guard
+     * still sees it), but NOT auto-approved. Its tools may only use grants the parent
+     * conversation [parentConversationId] already holds — see [ToolApprovalDefaults.decide].
+     */
+    fun markDelegated(conversationId: Uuid, parentConversationId: Uuid?) {
+        ids.add(conversationId)
+        delegatedParents[conversationId] = parentConversationId ?: NO_PARENT
+        persistIds()
+    }
+
+    /** Parent of a delegated (sub-agent) conversation; null if not delegated or unknown. */
+    fun delegationParent(conversationId: Uuid): Uuid? =
+        delegatedParents[conversationId]?.takeIf { it != NO_PARENT }
+
+    /** Approval context of [conversationId], for [ToolApprovalDefaults.decide]. */
+    fun runKind(conversationId: Uuid): ToolApprovalDefaults.RunKind = when {
+        conversationId in delegatedParents -> ToolApprovalDefaults.RunKind.DELEGATED
+        conversationId in autoApproveIds -> ToolApprovalDefaults.RunKind.UNATTENDED
+        else -> ToolApprovalDefaults.RunKind.INTERACTIVE
+    }
+
     fun unmark(conversationId: Uuid) {
         ids.remove(conversationId)
         autoApproveIds.remove(conversationId)
+        delegatedParents.remove(conversationId)
         persistIds()
     }
 
@@ -131,6 +160,7 @@ object HeadlessConversations {
     fun clearAll() {
         ids.clear()
         autoApproveIds.clear()
+        delegatedParents.clear()
         persistIds()
     }
 

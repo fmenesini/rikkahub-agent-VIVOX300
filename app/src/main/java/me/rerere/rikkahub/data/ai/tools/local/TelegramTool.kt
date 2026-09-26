@@ -341,6 +341,11 @@ fun telegramSendPhotoTool(prefs: TelegramBotPreferences, client: TelegramBotClie
         val chatId = p["chat_id"]?.jsonPrimitive?.longOrNull ?: prefs.current().defaultChatId
             ?: return@Tool textPart(buildJsonObject { put("error", "no chat_id and no default_chat_id set") })
         val caption = p["caption"]?.jsonPrimitive?.contentOrNull
+        // Uploading to Telegram is data egress: same path floor as the file tools, so an
+        // approved send can never ship API keys, OAuth tokens or the chat database.
+        PathSafetyGuard.check(path)?.let { v ->
+            return@Tool fmTextPart(fmErrEnvelope(v.code, v.detail))
+        }
         val file = File(path)
         if (!file.exists() || !file.isFile) {
             return@Tool textPart(buildJsonObject { put("error", "file not found: $path") })
@@ -383,6 +388,11 @@ fun telegramSendDocumentTool(prefs: TelegramBotPreferences, client: TelegramBotC
         val chatId = p["chat_id"]?.jsonPrimitive?.longOrNull ?: prefs.current().defaultChatId
             ?: return@Tool textPart(buildJsonObject { put("error", "no chat_id and no default_chat_id set") })
         val caption = p["caption"]?.jsonPrimitive?.contentOrNull
+        // Uploading to Telegram is data egress: same path floor as the file tools, so an
+        // approved send can never ship API keys, OAuth tokens or the chat database.
+        PathSafetyGuard.check(path)?.let { v ->
+            return@Tool fmTextPart(fmErrEnvelope(v.code, v.detail))
+        }
         val file = File(path)
         if (!file.exists() || !file.isFile) {
             return@Tool textPart(buildJsonObject { put("error", "file not found: $path") })

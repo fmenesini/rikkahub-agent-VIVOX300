@@ -86,6 +86,14 @@ object HardlineCommandGuard {
         // either through an LLM agent — if you actually need to do this, use a terminal.
         Regex("\\brm\\s+(-[^\\s]*\\s+)*(/etc|/usr|/var|/bin|/sbin|/boot|/lib)(/\\S*)?" + PATH_END, IGNORE_CASE) to
             "recursive delete of system directory",
+        // Android shared storage is the phone's real $HOME: the root or a whole standard
+        // user folder (every photo in DCIM) has no recovery path. Only the folder itself,
+        // not descendants — `rm -rf /sdcard/Download/old.zip` stays approval-gated.
+        Regex(
+            "\\brm\\s+(-[^\\s]*\\s+)*(/sdcard|/mnt/sdcard|/storage/emulated(/0)?|/storage/self/primary|/data/media/0)" +
+                "(/(DCIM|Pictures|Documents|Download|Movies|Music|Android))?/?\\*?" + PATH_END,
+            IGNORE_CASE,
+        ) to "recursive delete of shared storage",
         // ~ OR \$HOME OR \${HOME} — IGNORE_CASE handles \$home etc.
         Regex("\\brm\\s+(-[^\\s]*\\s+)*(~|\\\$HOME|\\\$\\{HOME\\})(/?|/\\*)?" + PATH_END, IGNORE_CASE) to
             "recursive delete of home directory",
