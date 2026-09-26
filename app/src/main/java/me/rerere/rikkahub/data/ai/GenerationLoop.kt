@@ -35,6 +35,7 @@ import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.Provider
 import me.rerere.ai.provider.ProviderManager
 import me.rerere.ai.provider.ProviderSetting
+import me.rerere.ai.core.TaskProgress
 import me.rerere.ai.provider.TextGenerationParams
 import me.rerere.ai.provider.providers.openai.ResponseStreamErrorException
 import me.rerere.ai.registry.ModelRegistry
@@ -452,6 +453,17 @@ internal object LoopGuard {
  * flips that tool to Denied before this function runs, but this pure function must not rely
  * on that ordering to avoid re-running it.
  */
+/** Tools the latest user message names that have not been called since it (see [TaskProgress]). */
+internal fun pendingNamedTools(messages: List<UIMessage>, toolNames: List<String>): List<String> {
+    val taskIndex = messages.indexOfLast { it.role == MessageRole.USER }
+    if (taskIndex < 0) return emptyList()
+    val taskText = messages[taskIndex].parts.filterIsInstance<UIMessagePart.Text>().joinToString("\n") { it.text }
+    val called = messages.drop(taskIndex + 1).flatMap { m ->
+        m.parts.filterIsInstance<UIMessagePart.Tool>().filter { it.isExecuted }.map { it.toolName }
+    }.toSet()
+    return TaskProgress.pending(taskText, toolNames, called)
+}
+
 internal fun resumableToolsIncludingUnexecutedAuto(
     tools: List<UIMessagePart.Tool>,
 ): List<UIMessagePart.Tool> = tools.filter { tool ->
@@ -536,6 +548,7 @@ class GenerationLoop(
 
         val turnStartMs = android.os.SystemClock.elapsedRealtime()
         var loopGuardTripCount = 0
+        var taskProgressNudged = false
 
         for (stepIndex in 0 until maxSteps) {
             // Wall-clock cap: any single user turn that has been running longer than the
@@ -751,7 +764,18 @@ class GenerationLoop(
 
                 val toolCalls = messages.last().getTools().filter { !it.isExecuted }
                 if (toolCalls.isEmpty()) {
-                    // no tool calls, break
+                    // Gemini Nano gives the final answer as soon as it can predict it, skipping
+                    // steps the task named (Vivo: write_text_file / read_file never called).
+                    // The AICore prompt ends with a runtime progress line; send the model back
+                    // once to act on it instead of accepting the early answer.
+                    if (provider is ProviderSetting.AICore && !taskProgressNudged) {
+                        val pending = pendingNamedTools(messages, toolsInternal.map { it.name })
+                        if (pending.isNotEmpty()) {
+                            taskProgressNudged = true
+                            Log.i(TAG, "generateText: answer with named tools uncalled $pending; one more step")
+                            continue
+                        }
+                    }
                     break
                 }
 

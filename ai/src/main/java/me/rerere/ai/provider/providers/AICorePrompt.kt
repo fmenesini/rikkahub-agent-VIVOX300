@@ -7,6 +7,7 @@ import kotlinx.serialization.json.buildJsonObject
 import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.core.RuntimeTools
+import me.rerere.ai.core.TaskProgress
 import me.rerere.ai.core.Tool
 import me.rerere.ai.ui.ToolApprovalState
 import me.rerere.ai.ui.UIMessage
@@ -443,31 +444,9 @@ internal fun buildAiCorePrompt(
     return AiCorePrompt(prefix, prompt, toolsShown, tools.size, dropped)
 }
 
-/**
- * Progress of a task that names several tools ("1. web_fetch … 4. write_text_file …"), worked
- * out by the runtime from the calls actually made since the task message. Nano tends to answer
- * as soon as it can predict the result, skipping the remaining side-effect steps (seen on the
- * Vivo: the final line was written as an answer, write_text_file and read_file never called).
- * Shown right before the model's turn, only while some named tools are still uncalled after
- * at least one call; null otherwise. Order follows the first mention in the task.
- */
-internal fun taskProgressLine(taskText: String, tools: List<Tool>, called: Set<String>): String? {
-    if (called.isEmpty()) return null
-    val named = tools.map { it.name }
-        .filter { it != RuntimeTools.READ_TOOL_OUTPUT }
-        .mapNotNull { name ->
-            Regex("(?<![A-Za-z0-9_])" + Regex.escape(name) + "(?![A-Za-z0-9_])")
-                .find(taskText)?.let { it.range.first to name }
-        }
-        .sortedBy { it.first }
-        .map { it.second }
-    if (named.size < 2) return null
-    val pending = named.filter { it !in called }
-    if (pending.isEmpty()) return null
-    val steps = named.joinToString(", ") { if (it in called) "$it done" else "$it NOT DONE" }
-    return "[runtime] Tools named in the task: $steps. If the task still needs them, " +
-        "call ${pending.first()} now; do not give the final answer before."
-}
+/** See [TaskProgress]: shown right before the model's turn while named tools are uncalled. */
+internal fun taskProgressLine(taskText: String, tools: List<Tool>, called: Set<String>): String? =
+    TaskProgress.line(taskText, tools.map { it.name }, called)
 
 private fun flattenForAiCore(history: List<UIMessage>, taskIndex: Int, retrievable: Boolean): List<PromptUnit> {
     val query = relevanceQuery(history)
