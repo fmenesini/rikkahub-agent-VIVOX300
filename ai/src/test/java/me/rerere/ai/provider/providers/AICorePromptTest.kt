@@ -11,6 +11,7 @@ import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -474,5 +475,55 @@ class AICorePromptTest {
         val prefix = buildAiCoreSystemPrefix(listOf(tool("web_fetch", "Fetch a URL", "url"))).first
         assertTrue(prefix.contains("call the NEXT tool"))
         assertFalse(prefix.contains("the work is DONE"))
+    }
+
+    // ---- task progress ----
+
+    private val testATools = listOf("web_fetch", "get_time_info", "eval_javascript", "write_text_file", "read_file")
+        .map { tool(it, "d", "x") }
+    private val testATask = "Fai questi passi in ordine:\n1. Con web_fetch leggi la pagina.\n2. Con get_time_info prendi la data.\n" +
+        "3. Con eval_javascript calcola.\n4. Con write_text_file salva il file.\n5. Con read_file rileggi il file."
+
+    private fun called(vararg names: String) = UIMessage(role = MessageRole.ASSISTANT, parts = names.mapIndexed { i, n ->
+        UIMessagePart.Tool("p$i", n, "{}", listOf(UIMessagePart.Text("""{"ok":true}""")))
+    })
+
+    @Test
+    fun `progress line names the next uncalled step of the task`() {
+        // Vivo test A v2: after eval_javascript Nano answered with the final line and never
+        // called write_text_file / read_file.
+        val p = buildAiCorePrompt(listOf(user(testATask), called("web_fetch", "get_time_info", "eval_javascript")), testATools)
+        val line = p.prompt.lines().single { it.startsWith("[runtime]") }
+        assertTrue(line, line.contains("eval_javascript done") && line.contains("write_text_file NOT DONE"))
+        assertTrue(line, line.contains("call write_text_file now"))
+        assertTrue(p.prompt.endsWith(line + "\nmodel: "))
+    }
+
+    @Test
+    fun `no progress line before the first call, after the last one, or for a one-tool task`() {
+        assertNull(taskProgressLine(testATask, testATools, emptySet()))
+        assertNull(taskProgressLine(testATask, testATools, testATools.map { it.name }.toSet()))
+        assertNull(taskProgressLine("Usa web_fetch su due pagine", testATools, setOf("web_fetch")))
+        val done = buildAiCorePrompt(listOf(user(testATask), called(*testATools.map { it.name }.toTypedArray())), testATools)
+        assertFalse(done.prompt.contains("[runtime]"))
+    }
+
+    @Test
+    fun `progress follows the order of mention and ignores tools not offered or partial names`() {
+        val task = "Prima read_file, poi web_fetch. Non usare write_text_file_v2 ne' list_files."
+        val line = taskProgressLine(task, testATools, setOf("read_file"))!!
+        assertTrue(line, line.indexOf("read_file") < line.indexOf("web_fetch"))
+        assertFalse(line, line.contains("write_text_file"))
+        assertFalse(line, line.contains("list_files"))
+    }
+
+    @Test
+    fun `progress applies to the latest user message only`() {
+        // Second Vivo turn: the user resent steps 4-5 as a new message.
+        val msgs = listOf(user(testATask), called("web_fetch", "get_time_info", "eval_javascript"),
+            user("4. Con write_text_file salva il file.\n5. Con read_file rileggi il file."), called("write_text_file"))
+        val line = buildAiCorePrompt(msgs, testATools).prompt.lines().single { it.startsWith("[runtime]") }
+        assertTrue(line, line.contains("write_text_file done") && line.contains("call read_file now"))
+        assertFalse(line, line.contains("web_fetch"))
     }
 }

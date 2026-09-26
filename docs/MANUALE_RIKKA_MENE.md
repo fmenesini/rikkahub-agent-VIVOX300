@@ -136,9 +136,10 @@ Nota: gli scenari automatici usano un modello simulato che legge solo il prompt,
 
 ### 6.1 Installare e aggiornare
 
-1. Apri la pagina **Releases** del repository su GitHub e scarica l'ultima `…-arm64-v8a-debug.apk`.
-2. Installa sopra la versione esistente (non serve disinstallare dalla `apk-14cf4d8-run4` in poi).
-3. Il file `.sha256` accanto serve a verificare che il download sia integro.
+1. Apri la pagina **Releases** del repository su GitHub e scarica l'ultima `Rikka-mene-<versione>-arm64-v8a.apk` (release ufficiale, pacchetto `it.menesini.rikkamene`).
+2. Le versioni successive si installano sopra senza disinstallare (stessa chiave di firma).
+3. Dalla beta (`…-debug.apk`, pacchetto diverso) i dati non passano da soli: Backup nella beta → installa la release → Ripristina → disinstalla la beta.
+4. Il file `.sha256` accanto serve a verificare che il download sia integro.
 
 ### 6.2 Configurare l'assistente
 
@@ -155,12 +156,33 @@ Impostazioni → Providers → **Local · LiteRT** → Enable → scarica **Gemm
 
 Ogni test in una **chat nuova** su Gemini Nano (FULL). Mandare gli screenshot delle chiamate tool (tocca "Called tool …" per vedere input e risultato).
 
-### Test A — Catena di 4 tool
+### Test A — Catena di 5 tool (anche collaudo della release)
+
+Prima: permesso **"Accesso a tutti i file"** dato a Rikka-mene (è un'app nuova, va ridato); nell'assistente attivi i tool **Files**, **Time Info**, **JavaScript Engine**; modello Gemini Nano (FULL); chat nuova.
 
 Prompt:
-`Leggi con web_fetch https://it.wikipedia.org/wiki/Mura_di_Lucca e trova chi portò a termine le mura e in quali anni. Poi usa get_time_info per sapere la data di oggi, calcola con eval_javascript quanti anni sono passati dal 1650 a oggi, e salva un riassunto di una riga con write_text_file nel file /sdcard/Download/RikkaHub/test-mura.txt. Alla fine rileggi il file con read_file e dimmi cosa contiene.`
+```
+Fai questi passi in ordine, un tool alla volta:
+1. Con web_fetch leggi https://it.wikipedia.org/wiki/Mura_di_Lucca e trova chi portò a termine le mura e in che anno furono completate.
+2. Con get_time_info prendi la data di oggi.
+3. Con eval_javascript calcola quanti anni sono passati dall'anno di completamento a oggi.
+4. Con write_text_file salva nel file /sdcard/Download/RikkaHub/test-mura-v2.txt una sola riga in questo formato: NOME | ANNO | ANNI PASSATI
+5. Con read_file rileggi il file.
+Alla fine rispondimi solo con il contenuto del file.
+```
 
-Cosa osservare: 5 chiamate in ordine (web_fetch, get_time_info, eval_javascript, write_text_file, read_file); approvazioni richieste per eval_javascript, write_text_file e read_file; il file contiene Lipparelli e il numero di anni giusto; la risposta finale cita il contenuto riletto. Successo pieno se il file esiste e il calcolo è corretto.
+Poi, nella stessa chat: `Chi le ha portate a termine, e in quali anni furono costruite?`
+
+Risultato atteso: file con `Paolo Lipparelli | 1650 | 376` (nel 2026); risposta alla domanda successiva: **Paolo Lipparelli, 1645-1650**.
+
+Cosa cambia rispetto alla versione precedente: i passi sono numerati (Nano li segue meglio); l'anno per il calcolo va preso dalla pagina, non è scritto nel prompt, quindi il test verifica che i dati passino davvero da un passo all'altro; il formato fisso della riga rende l'esito controllabile a colpo d'occhio; il file nuovo evita di leggere per errore quello del test vecchio; la domanda finale verifica che il primo risultato sopravviva alla compressione del contesto.
+
+| Esito | Significato |
+|---|---|
+| Riga giusta + domanda finale giusta | Superato |
+| 5 tool in ordine ma anno o calcolo sbagliati | Limite del modello, non della release |
+| Si ferma prima del passo 5 senza errori | Problema di continuazione (come il vecchio Test B) |
+| Crash, schermata bianca o errore strano su un tool preciso | Sospetto R8: annotare il passo e mandare screenshot |
 
 ### Test B — Recupero da errori
 
@@ -178,7 +200,7 @@ Cosa osservare: il file non esiste e non comparirà mai. Il sistema deve fermars
 
 ### Test di regressione (quando cambia qualcosa)
 
-Il test delle Mura di Lucca, seguito da "Da parte di chi?". Risposta attesa: **Paolo Lipparelli, 1645-1650**.
+Il Test A completo, compresa la domanda finale.
 
 ## 8. Sicurezza: cosa è protetto
 
