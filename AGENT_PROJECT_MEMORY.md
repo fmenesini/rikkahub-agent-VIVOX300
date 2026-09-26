@@ -410,6 +410,18 @@ llama.cpp, any model, not only Gemma) are the opt-in path for heavy tasks, conte
   still uncalled (`TaskProgress.pending`), one more step instead of accepting the answer (once
   per generateText). [REQUIRES VIVO VALIDATION]
 
+## Vivo run 8 (2026-09-26, release v1.0.2) — Test A v2 and Test D (web search), screenshots
+- [CONFIRMED] Test A v2 passed on the FIRST attempt: 5 tools, then `PAOLO LIPPARELLI | 1650 | 376`.
+- [FAILED] Test D (search_web → web_fetch → answer with source), two runs:
+  a) two search_web calls, never web_fetch, then `<tool_call>{…}}, "stop": true}</tool_call>`
+     shown as raw text (trailing junk after the object: parser gave up);
+  b) search, then read_tool_output ×2 on the search output, then "no clear date".
+  Cause: the raw search JSON (10 hits, long page text, ids, images) overflowed the window and
+  relevance clipping kept matching snippets but dropped the urls, so there was nothing to fetch.
+- Fix (1.0.3): `compactSearchResult` renders `{"items":[…url…]}` results as ≤8 lines
+  "n. title | url" + 160-char snippet (no resume hint); `leadingJsonObject` repair in the
+  tool_call parser takes the first complete object. [REQUIRES VIVO VALIDATION]
+
 ## Next steps (priority order)
 1. [DONE] Build + install on the Vivo; AICore agent loop with web_fetch validated (runs 1-3).
    Next on AICore: multi-step tasks (3+ tools), error recovery, loop behaviour on device.

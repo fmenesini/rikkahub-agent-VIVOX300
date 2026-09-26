@@ -444,6 +444,36 @@ internal fun buildAiCorePrompt(
     return AiCorePrompt(prefix, prompt, toolsShown, tools.size, dropped)
 }
 
+private const val SEARCH_MAX_HITS = 8
+private const val SEARCH_SNIPPET_CHARS = 160
+
+/**
+ * A web-search result (`{"items":[{"title","url","text",…}],…}`) as one short entry per hit.
+ * The raw JSON (ids, dates, image lists, long page text) overflowed Nano's window, and clipping
+ * by relevance kept the snippets that match the question but dropped the urls, so the model
+ * could not open a result (Vivo test D: it paged the search output with read_tool_output and
+ * never called web_fetch). Null when [result] is not in that shape.
+ */
+internal fun compactSearchResult(result: String): String? {
+    if (!result.startsWith("{") || !result.contains("\"items\"")) return null
+    val items = runCatching {
+        (Json.parseToJsonElement(result) as? JsonObject)?.get("items") as? kotlinx.serialization.json.JsonArray
+    }.getOrNull() ?: return null
+    fun JsonObject.str(key: String) = (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.content?.trim().orEmpty()
+    val hits = items.mapNotNull { it as? JsonObject }.filter { it.str("url").isNotEmpty() }
+    if (hits.isEmpty()) return null
+    return buildString {
+        append("search results (open one by its url):")
+        hits.take(SEARCH_MAX_HITS).forEachIndexed { i, hit ->
+            val snippet = hit.str("text").ifEmpty { hit.str("highlights") }.replace(Regex("\\s+"), " ")
+            append('\n').append(i + 1).append(". ").append(shorten(hit.str("title"), 90))
+                .append(" | ").append(hit.str("url"))
+            if (snippet.isNotEmpty()) append("\n   ").append(shorten(snippet, SEARCH_SNIPPET_CHARS))
+        }
+        if (hits.size > SEARCH_MAX_HITS) append("\n(+${hits.size - SEARCH_MAX_HITS} more)")
+    }
+}
+
 /** See [TaskProgress]: shown right before the model's turn while named tools are uncalled. */
 internal fun taskProgressLine(taskText: String, tools: List<Tool>, called: Set<String>): String? =
     TaskProgress.line(taskText, tools.map { it.name }, called)
@@ -492,11 +522,16 @@ private fun flattenForAiCore(history: List<UIMessage>, taskIndex: Int, retrievab
                         val resumeHint: ((Int) -> String)? = if (retrievable) {
                             { at -> "${RuntimeTools.READ_TOOL_OUTPUT} id=${part.toolCallId} offset=$at" }
                         } else null
+                        // Search results become one short entry per hit, url included: offsets
+                        // into the raw JSON no longer apply, so no resume hint for them.
+                        val compact = compactSearchResult(result)
+                        val body = neutralizeTranscriptMarkers(compact ?: result)
+                        val hint = if (compact != null) null else resumeHint
                         // The newest result keeps the passages that match what the user asked.
                         val clipped = if (latest) {
-                            clipRelevant(neutralizeTranscriptMarkers(result), LATEST_TOOL_RESULT_CHARS, query, resumeHint)
+                            clipRelevant(body, LATEST_TOOL_RESULT_CHARS, query, hint)
                         } else {
-                            clipRelevant(neutralizeTranscriptMarkers(result), OLD_TOOL_RESULT_CHARS, query, resumeHint)
+                            clipRelevant(body, OLD_TOOL_RESULT_CHARS, query, hint)
                         }
                         out += PromptUnit(role, "<tool_result>$clipped</tool_result>")
                     }
@@ -929,6 +964,8 @@ internal class ToolTagParser(private val tools: List<Tool> = emptyList()) {
             add(body.replace("}>", "}}"))
             // Trailing `,}` and `,]` — strip stray commas
             add(body.replace(Regex(""",\s*\}"""), "}").replace(Regex(""",\s*\]"""), "]"))
+            // Trailing junk after a complete object (Vivo: `{"name":…,"input":{…}}, "stop": true}`)
+            leadingJsonObject(body)?.let { add(it) }
             // Unbalanced braces — pad with `}` until balanced
             run {
                 val opens = body.count { it == '{' }
@@ -945,4 +982,30 @@ internal class ToolTagParser(private val tools: List<Tool> = emptyList()) {
         }
         return null
     }
+}
+
+/** The first complete `{…}` at the start of [text] (strings and escapes respected), or null. */
+internal fun leadingJsonObject(text: String): String? {
+    val start = text.indexOfFirst { !it.isWhitespace() }
+    if (start < 0 || text[start] != '{') return null
+    var depth = 0
+    var inString = false
+    var escaped = false
+    for (i in start until text.length) {
+        val c = text[i]
+        if (inString) {
+            when {
+                escaped -> escaped = false
+                c == '\\' -> escaped = true
+                c == '"' -> inString = false
+            }
+            continue
+        }
+        when (c) {
+            '"' -> inString = true
+            '{' -> depth++
+            '}' -> if (--depth == 0) return text.substring(start, i + 1)
+        }
+    }
+    return null
 }
