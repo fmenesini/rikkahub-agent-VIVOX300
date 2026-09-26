@@ -391,6 +391,14 @@ llama.cpp, any model, not only Gemma) are the opt-in path for heavy tasks, conte
   [REQUIRES VIVO VALIDATION]. If Nano still stops early, next step is enforcement in
   GenerationLoop (one bounded nudge when the model ends with named tools uncalled).
 
+## Vivo run 6 (2026-09-26, release v1.0.1) — Test A v2 again, screenshot
+- [CONFIRMED] Full chain in one turn: web_fetch, get_time_info, eval_javascript,
+  write_text_file, read_file, then the file line (`PAOLO LIPPARELLI | 1650 | 376`, uppercased).
+  The answer shows "2/2": it was a regeneration, whether attempt 1 failed is unknown.
+- [PARTIAL] Follow-up "Chi le ha portate a termine, e in quali anni furono costruite?" got the
+  same file line again instead of "Paolo Lipparelli, 1645-1650": the earlier "answer only with
+  the file content" instruction sticks. Name right, year range missing. Nano limit; not fixed.
+
 ## Next steps (priority order)
 1. [DONE] Build + install on the Vivo; AICore agent loop with web_fetch validated (runs 1-3).
    Next on AICore: multi-step tasks (3+ tools), error recovery, loop behaviour on device.
