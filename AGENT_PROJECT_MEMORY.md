@@ -422,6 +422,14 @@ llama.cpp, any model, not only Gemma) are the opt-in path for heavy tasks, conte
   "n. title | url" + 160-char snippet (no resume hint); `leadingJsonObject` repair in the
   tool_call parser takes the first complete object. [REQUIRES VIVO VALIDATION]
 
+## Vivo run 9 (2026-09-26, release v1.0.3) — Test D (web search), screenshots
+- [CONFIRMED] Mechanics fixed: one search_web (10 DuckDuckGo hits), one web_fetch on a
+  relevant hit (in3giorni.com "Chi ha costruito le mura di Lucca?", 200, not truncated),
+  answer citing the source. No raw tool_call, no read_tool_output detour.
+- [PARTIAL] Answer quality: "costruzione iniziò nel 1544, ma i lavori iniziarono nel 1504 e
+  terminarono nella seconda metà del XVII secolo" — no "who", muddled dates. Picked an FAQ
+  site over Wikipedia (hit 1). Reading/synthesis ceiling of Nano, not a runtime bug.
+
 ## Next steps (priority order)
 1. [DONE] Build + install on the Vivo; AICore agent loop with web_fetch validated (runs 1-3).
    Next on AICore: multi-step tasks (3+ tools), error recovery, loop behaviour on device.
