@@ -377,6 +377,20 @@ llama.cpp, any model, not only Gemma) are the opt-in path for heavy tasks, conte
 - Debug builds now use package `it.menesini.rikkamene.debug`: the old `excp.rikkahub.debug`
   beta does not update any more (uninstall it after moving data via backup/restore).
 
+## Vivo run 5 (2026-09-26, release v1.0.0, R8 on) — Test A v2, screenshots
+- [CONFIRMED] R8 release works on device: web_fetch, get_time_info, eval_javascript (QuickJS,
+  JNI), write_text_file all ran; approvals, tool sheets and restore from backup fine.
+- [CONFIRMED] Data passed between steps: year 1650 taken from the page, 2026-1650 = 376 in JS,
+  file line `Paolo Lipparelli | 1650 | 376` (29 bytes).
+- [FALSIFIED] "Numbered steps are enough": after eval_javascript Nano answered with the final
+  line (predictable without the side effects) and skipped write_text_file + read_file; resent
+  steps 4-5, it wrote the file and skipped read_file again.
+- Fix (1.0.1): `taskProgressLine` in AICorePrompt — runtime-computed line before the model's
+  turn: tools named in the task, done / NOT DONE, "call <next> now; do not give the final
+  answer before". Only after the first call and while named tools are uncalled.
+  [REQUIRES VIVO VALIDATION]. If Nano still stops early, next step is enforcement in
+  GenerationLoop (one bounded nudge when the model ends with named tools uncalled).
+
 ## Next steps (priority order)
 1. [DONE] Build + install on the Vivo; AICore agent loop with web_fetch validated (runs 1-3).
    Next on AICore: multi-step tasks (3+ tools), error recovery, loop behaviour on device.
