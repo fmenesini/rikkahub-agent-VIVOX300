@@ -303,6 +303,23 @@ at char ~16k of the article text: Paolo Lipparelli, 1645-1650).
   [REQUIRES VIVO VALIDATION] re-run the same prompt on the next APK.
 - Minor: Nano answered in English to an Italian prompt on the first turn.
 
+## Vivo run 2 (2026-09-26, APK apk-38639e7-run5) — user screenshot
+- [CONFIRMED on Vivo] AICore/Nano: ONE web_fetch (article mode, the run-1 fix works), answer
+  with real dates from the page head ("1544 … 1648"); the name (Lipparelli, char ~11.6k of a
+  ~20k article) was in the clipped middle. On "Da parte di chi?" Nano said "not in the text"
+  and did NOT call read_tool_output. Causes: head+tail clipping is blind to the question; the
+  prefix rule "after a tool returns, the work is DONE" discourages reading further.
+- [CONFIRMED on Vivo] Qwen3 4B on LiteRT: 298 s of thinking, no tool call, English answer
+  (CPU default, thinking on, 4k context). Not the recommended local model (Gemma 4 E4B, GPU on).
+- [MITIGATED, host + Gradle; checked on the real article text offline] `clipRelevant`: the
+  newest tool result keeps head/tail plus the passages matching the question (rare words weigh
+  more; short follow-ups borrow the previous question's words; ~160 chars of context kept
+  before a match so a long sentence keeps its subject). Used by the AICore prompt and by
+  ContextCompactor (LiteRT/llama.cpp). Prefix exception: when a result says "chars cut" and
+  the answer is not visible, call read_tool_output before saying "not in the text".
+  Also fixed: the "[earlier steps omitted]" header was glued to the previous line.
+  [REQUIRES VIVO VALIDATION] same Lucca prompt + "Da parte di chi?".
+
 ## Sprint 6 (2026-09-26) — one context manager for every on-device runtime
 Decision (user): AICore stays primary and is used to its limits; local models (LiteRT-LM or
 llama.cpp, any model, not only Gemma) are the opt-in path for heavy tasks, context capped at

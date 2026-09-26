@@ -261,7 +261,8 @@ class AICorePromptTest {
     @Test
     fun `ledger lines carry the call id only when the result can be read back`() {
         // Alternating tools: no runs to merge, so each dropped call gets its own line.
-        val parts = (1..40).map { i ->
+        // 80 steps: more lines than the ledger reserve can hold, so some are only counted.
+        val parts = (1..80).map { i ->
             UIMessagePart.Tool("c$i", if (i % 2 == 0) "list_dir" else "read_file", """{"path":"p$i"}""",
                 listOf(UIMessagePart.Text("r$i " + "q".repeat(900))))
         }
@@ -271,6 +272,7 @@ class AICorePromptTest {
         assertFalse(without.prompt.contains("[id=c"))
         assertTrue(with.prompt, Regex("""- read_file \{"path":"p\d+"\} -> ok \[id=c\d+, \d+ ch]""").containsMatchIn(with.prompt))
         assertTrue(with.prompt, with.prompt.contains("older tool calls not listed"))
+        assertTrue("gap header on its own line", with.prompt.contains("scan\n[earlier steps omitted]"))
         assertTrue(with.estimatedTokens <= AICORE_INPUT_TOKEN_BUDGET)
     }
 
@@ -385,4 +387,72 @@ class AICorePromptTest {
         assertEquals("- web_fetch(url*, extract_mode=article|raw|text, level): Fetch a URL", aiCoreToolLine(t))
     }
 
+
+    // ---- query-aware clipping of the newest result ----
+
+    private val article = buildString {
+        for (i in 1..60) append("Paragraph $i describes the old town walls, the gates and the bastions of the city in general terms. ")
+        append("In the years 1645-1650 the engineer Paolo Lipparelli completed the enormous construction site. ")
+        for (i in 61..120) append("Paragraph $i describes the old town walls, the gates and the bastions of the city in general terms. ")
+    }
+
+    @Test
+    fun `newest result keeps the passage that answers the question`() {
+        val q = "Who completed the construction site of the walls and in which years?"
+        val out = clipRelevant(article, 2400, q) { at -> "read_tool_output id=c1 offset=$at" }
+        assertTrue(out.length <= 2400)
+        assertTrue(out, out.contains("Paolo Lipparelli completed the enormous construction site"))
+        // Every kept piece is original text, in order, and each marker points at its cut.
+        var pos = 0
+        for (m in Regex("""\n…\[(\d+) chars cut; read_tool_output id=c1 offset=(\d+)]…\n""").findAll(out)) {
+            val cutAt = m.groupValues[2].toInt()
+            val piece = out.substring(pos, m.range.first)
+            assertEquals("text before the marker ends where the cut starts", article.substring(cutAt - piece.length, cutAt), piece)
+            pos = m.range.last + 1
+            val resumeAt = cutAt + m.groupValues[1].toInt()
+            assertTrue(article.substring(resumeAt).startsWith(out.substring(pos, minOf(out.length, pos + 20))))
+        }
+    }
+
+    @Test
+    fun `no matching words falls back to head and tail`() {
+        assertEquals(clipMiddle(article, 2400), clipRelevant(article, 2400, "hi there"))
+        assertEquals(clipMiddle(article, 2400), clipRelevant(article, 2400, "quantum chromodynamics"))
+    }
+
+    @Test
+    fun `a short follow-up question borrows the words of the previous one`() {
+        val h = listOf(user("chi portò a termine il cantiere delle mura"), UIMessage(role = MessageRole.ASSISTANT, parts = listOf(UIMessagePart.Text("Nel 1648."))), user("Da parte di chi?"))
+        val words = relevanceWords(relevanceQuery(h))
+        assertTrue(words.toString(), words.containsAll(listOf("portò", "termine", "cantiere")))
+        assertFalse(words.contains("parte"))
+    }
+
+    @Test
+    fun `the AICore prompt shows the answering passage of a long page and tells the model to read cuts`() {
+        val fetch = UIMessagePart.Tool("w1", "web_fetch", """{"url":"https://example.org/walls"}""", listOf(UIMessagePart.Text(article)))
+        val msgs = listOf(user("Who completed the construction site of the walls?"), UIMessage(role = MessageRole.ASSISTANT, parts = listOf(fetch)))
+        val p = buildAiCorePrompt(msgs, listOf(readTool))
+        assertTrue(p.prompt.contains("Paolo Lipparelli"))
+        assertFalse("gap header glued to the task text", Regex("[^\n]\\[earlier steps omitted]").containsMatchIn(p.prompt))
+        assertTrue(p.estimatedTokens <= AICORE_INPUT_TOKEN_BUDGET)
+        assertTrue(p.systemPrefix.contains("Never answer \"not in the text\""))
+        assertFalse(buildAiCorePrompt(msgs, emptyList()).systemPrefix.contains("Never answer"))
+    }
+
+    @Test
+    fun `the subject of a long matching sentence is kept with it`() {
+        // A long sentence is split across chunks and the name sits before the words the
+        // question matches (the real case: "...fino a Paolo Lipparelli che nel quinquennio
+        // 1645-1650 portò a termine l'enorme cantiere").
+        val filler = (1..80).joinToString(" ") { "Blocco $it: descrizione generale delle porte, dei bastioni e delle cortine cittadine." }
+        val longSentence = "Alla fine del secolo si decise di richiedere l'opera di ingegneri fiamminghi, " +
+            "la cui scuola era in quel periodo la più prestigiosa, e fu interpellato un architetto che fornì un progetto " +
+            "cui si attennero in linea di massima tutti i successivi ingegneri, fino a Mario Rossi che dopo lunghe vicende " +
+            "nel quinquennio 1645-1650 portò a termine l'enorme cantiere."
+        val text = "$filler $longSentence $filler"
+        val out = clipRelevant(text, 2400, "chi portò a termine il cantiere delle mura e in quali anni")
+        assertTrue(out, out.contains("Mario Rossi") && out.contains("1645-1650"))
+        assertTrue(out.length <= 2400)
+    }
 }

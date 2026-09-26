@@ -2,6 +2,8 @@ package me.rerere.ai.core
 
 import me.rerere.ai.provider.providers.LedgerEntry
 import me.rerere.ai.provider.providers.clipMiddle
+import me.rerere.ai.provider.providers.clipRelevant
+import me.rerere.ai.provider.providers.relevanceQuery
 import me.rerere.ai.provider.providers.estimateAiCoreTokens
 import me.rerere.ai.provider.providers.ledgerEntry
 import me.rerere.ai.provider.providers.neutralizeTranscriptMarkers
@@ -46,6 +48,7 @@ object ContextCompactor {
     ): Result {
         val caps = Caps.forBudget(tokenBudget)
         val taskIndex = messages.indexOfLast { it.role == MessageRole.USER }
+        val query = relevanceQuery(messages)
         val lastToolPart = messages.asSequence().flatMap { it.parts.asSequence() }
             .filterIsInstance<UIMessagePart.Tool>().lastOrNull { it.isExecuted }
 
@@ -78,7 +81,9 @@ object ContextCompactor {
                     val hint: ((Int) -> String)? = if (retrievable) {
                         { at -> "${RuntimeTools.READ_TOOL_OUTPUT} id=${p.toolCallId} offset=$at" }
                     } else null
-                    val clippedResult = clipMiddle(result, if (latest) caps.latestResult else caps.oldResult, hint)
+                    // The newest result keeps the passages that match what the user asked.
+                    val clippedResult = if (latest) clipRelevant(result, caps.latestResult, query, hint)
+                        else clipMiddle(result, caps.oldResult, hint)
                     val clippedInput = clipMiddle(p.input.ifBlank { "{}" }, if (latest) caps.latestInput else caps.oldInput)
                     val newOutput = if (clippedResult === result) p.output else
                         listOf(UIMessagePart.Text(clippedResult)) + p.output.filter { it !is UIMessagePart.Text }

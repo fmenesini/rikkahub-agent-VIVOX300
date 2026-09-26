@@ -88,6 +88,119 @@ internal fun estimateAiCoreTokens(text: CharSequence): Int {
     return (ascii + 2) / 3 + cjk + (other + 1) / 2
 }
 
+/** Context kept before a matching passage (half as much after it). */
+private const val CONTEXT_CHARS = 160
+
+private val RELEVANCE_WORD = Regex("[\\p{L}\\p{N}]{4,}")
+
+/** Words that say how to do the task rather than what to look for. */
+private val RELEVANCE_STOPWORDS = setOf(
+    // it
+    "della", "delle", "dello", "degli", "dalla", "dalle", "nella", "nelle", "nello", "negli",
+    "sulla", "sulle", "questa", "questo", "questi", "queste", "quale", "quali", "quello", "quella",
+    "sono", "come", "dove", "quando", "perché", "perche", "cosa", "anche", "molto", "dimmi",
+    "leggi", "leggere", "cerca", "cercare", "trova", "trovare", "pagina", "testo", "risposta",
+    "memoria", "rispondere", "rifai", "ricerca", "fammi", "vorrei", "puoi", "sapere", "parte",
+    // en
+    "what", "which", "with", "from", "that", "this", "have", "there", "their", "about", "page",
+    "text", "tell", "find", "read", "please", "answer", "search", "memory", "could", "would",
+    // tool / url noise
+    "https", "http", "fetch", "wikipedia", "html", "tool",
+)
+
+/** Content words of [query], lowercased (≥ 4 letters, stopwords removed). */
+internal fun relevanceWords(query: String): Set<String> =
+    RELEVANCE_WORD.findAll(query.lowercase()).map { it.value }
+        .filter { it !in RELEVANCE_STOPWORDS && !it.all(Char::isDigit) }.toSet()
+
+/**
+ * What the newest tool result is being read for: the last user message, plus the one before
+ * when the last is a short follow-up ("Da parte di chi?" carries no searchable words alone).
+ */
+internal fun relevanceQuery(history: List<UIMessage>): String {
+    val users = history.filter { it.role == MessageRole.USER }
+        .map { m -> m.parts.filterIsInstance<UIMessagePart.Text>().joinToString(" ") { it.text } }
+    val last = users.lastOrNull().orEmpty()
+    return if (last.length < 80 && users.size >= 2) users[users.size - 2] + " " + last else last
+}
+
+/**
+ * Clips [text] to [maxChars] like [clipMiddle], but keeps the passages that best match
+ * [query] instead of only head and tail: a fact asked about can sit anywhere in a page, and a
+ * small model rarely goes back for a middle it cannot see. Passages are scored by the query
+ * words they contain, rarer words (in this text) weighing more. Falls back to [clipMiddle]
+ * when nothing matches. Every cut keeps a marker; with [resumeHint] it says where to resume.
+ */
+internal fun clipRelevant(
+    text: String,
+    maxChars: Int,
+    query: String,
+    resumeHint: ((cutAt: Int) -> String)? = null,
+): String {
+    if (text.length <= maxChars) return text
+    val words = relevanceWords(query)
+    if (words.isEmpty() || maxChars < 600) return clipMiddle(text, maxChars, resumeHint)
+    val lower = text.lowercase()
+    val freq = words.associateWith { w -> Regex(Regex.escape(w)).findAll(lower).count() }
+    val weight = freq.filterValues { it > 0 }.mapValues { (_, n) -> 1.0 / kotlin.math.ln(1.0 + n) }
+    if (weight.isEmpty()) return clipMiddle(text, maxChars, resumeHint)
+
+    // Sentence-ish chunks of 200-400 chars.
+    val chunks = mutableListOf<IntRange>()
+    var start = 0
+    while (start < text.length) {
+        var end = minOf(text.length, start + 400)
+        if (end < text.length) {
+            val window = text.substring(start + minOf(200, end - start), end)
+            val cut = listOf(window.lastIndexOf(". "), window.lastIndexOf('\n')).max()
+            if (cut >= 0) end = start + minOf(200, end - start) + cut + 1
+        }
+        chunks += start until end
+        start = end
+    }
+    val headLen = maxChars / 5
+    val tailLen = maxChars / 10
+    fun score(r: IntRange): Double {
+        val c = lower.substring(r.first, r.last + 1)
+        return weight.entries.sumOf { (w, v) -> if (c.contains(w)) v else 0.0 }
+    }
+    val candidates = chunks.filter { it.first >= headLen && it.last < text.length - tailLen }
+        .map { it to score(it) }.filter { it.second > 0.0 }
+        .sortedByDescending { it.second }
+    if (candidates.isEmpty()) return clipMiddle(text, maxChars, resumeHint)
+
+    fun marker(from: Int, to: Int) = if (resumeHint == null) "\n…[${to - from} chars cut]…\n"
+    else "\n…[${to - from} chars cut; ${resumeHint(from)}]…\n"
+    val markerCost = marker(0, text.length).length
+    var budget = maxChars - headLen - tailLen - markerCost // the marker before the tail
+    val picked = mutableListOf<IntRange>()
+    for ((r, _) in candidates) {
+        // Take some context around the match: a long sentence is split across chunks, and its
+        // subject (who, what) often sits just before the words that matched the question.
+        var from = maxOf(headLen, r.first - CONTEXT_CHARS)
+        var to = minOf(text.length - tailLen - 1, r.last + CONTEXT_CHARS / 2)
+        while (from < r.first && !text[from - 1].isWhitespace()) from++
+        while (to > r.last && !text[to + 1].isWhitespace()) to--
+        val range = from..to
+        if (picked.any { it.first <= range.last && range.first <= it.last }) continue
+        val cost = range.last - range.first + 1 + markerCost
+        if (cost > budget) continue
+        picked += range
+        budget -= cost
+    }
+    if (picked.isEmpty()) return clipMiddle(text, maxChars, resumeHint)
+    picked.sortBy { it.first }
+    val out = StringBuilder(text.substring(0, headLen))
+    var pos = headLen
+    for (r in picked) {
+        out.append(marker(pos, r.first)).append(text, r.first, r.last + 1)
+        pos = r.last + 1
+    }
+    val tailStart = text.length - tailLen
+    out.append(marker(pos, tailStart)).append(text, tailStart, text.length)
+    return out.toString()
+}
+
 /**
  * Keeps the head and tail of [text], replacing the middle with a visible cut marker. With
  * [resumeHint] the marker also tells the model how to fetch the cut part: the hint gets the
@@ -254,6 +367,8 @@ internal fun buildAiCorePrompt(
         var gapStart = -1
         fun closeGap(end: Int) {
             if (gapStart < 0) return
+            // The gap starts on its own line, never glued to the text before it.
+            if (isNotEmpty() && last() != '\n') append('\n')
             append("[earlier steps omitted]\n")
             var unlisted = 0
             for (j in gapStart until end) {
@@ -289,6 +404,7 @@ internal fun buildAiCorePrompt(
 }
 
 private fun flattenForAiCore(history: List<UIMessage>, taskIndex: Int, retrievable: Boolean): List<PromptUnit> {
+    val query = relevanceQuery(history)
     val lastToolResultMsg = history.indexOfLast { m ->
         m.parts.any { it is UIMessagePart.Tool && it.isExecuted }
     }
@@ -331,11 +447,12 @@ private fun flattenForAiCore(history: List<UIMessage>, taskIndex: Int, retrievab
                         val resumeHint: ((Int) -> String)? = if (retrievable) {
                             { at -> "${RuntimeTools.READ_TOOL_OUTPUT} id=${part.toolCallId} offset=$at" }
                         } else null
-                        val clipped = clipMiddle(
-                            neutralizeTranscriptMarkers(result),
-                            if (latest) LATEST_TOOL_RESULT_CHARS else OLD_TOOL_RESULT_CHARS,
-                            resumeHint,
-                        )
+                        // The newest result keeps the passages that match what the user asked.
+                        val clipped = if (latest) {
+                            clipRelevant(neutralizeTranscriptMarkers(result), LATEST_TOOL_RESULT_CHARS, query, resumeHint)
+                        } else {
+                            clipMiddle(neutralizeTranscriptMarkers(result), OLD_TOOL_RESULT_CHARS, resumeHint)
+                        }
                         out += PromptUnit(role, "<tool_result>$clipped</tool_result>")
                     }
                 }
@@ -450,6 +567,11 @@ internal fun buildAiCoreSystemPrefix(
         // turn was over. The loop-guard catches this at trip 3 but the user sees 3 redundant
         // tool runs first. Naming "any" tool here lets Nano finalise on turn 2.
         appendLine("After ANY tool returns {\"success\":true} (or any non-error result), the work is DONE. Reply with ONE short confirmation line and stop. NEVER re-emit the same tool_call. NEVER call a verification tool (read_window_tree, take_screenshot, find_node, etc.) to double-check.")
+        // The rule above ended turns before the model looked at text it had been shown only
+        // in part; reading a cut result is not a verification, so it gets an explicit exception.
+        if (tools.any { it.name == RuntimeTools.READ_TOOL_OUTPUT }) {
+            appendLine("Exception: if a <tool_result> says \"chars cut\" and the answer is not in the visible part, call ${RuntimeTools.READ_TOOL_OUTPUT} with that id and a query word before answering. Never answer \"not in the text\" without doing that.")
+        }
         appendLine("If you see <tool_result> for a tool you already called, that tool ran — do not call it again. Read the result and either summarise for the user OR call a DIFFERENT tool that builds on it.")
         // Anti-lock-in rule. Nano (and similar small models) keep repeating "I cannot..."
         // when they previously said it, even after the user enables a new tool mid-chat.
