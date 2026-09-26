@@ -303,6 +303,15 @@ at char ~16k of the article text: Paolo Lipparelli, 1645-1650).
   [REQUIRES VIVO VALIDATION] re-run the same prompt on the next APK.
 - Minor: Nano answered in English to an Italian prompt on the first turn.
 
+## Vivo run 3 (2026-09-26, APK apk-b9e1544-run6) — user report + screenshot
+- [CONFIRMED on Vivo] AICore/Nano FULL solved the Lucca task: one web_fetch with
+  extract_mode "text" (full page text, truncated=false); user reports it worked well. The
+  question-aware clipping (clipRelevant) is what put the answer in Nano's ~4k window.
+- [CONFIRMED on Vivo, user judgement] LiteRT local models (Qwen3 4B tried; Gemma 4 E4B
+  recommended) are too slow and power-hungry to be usable day to day on the X300.
+  DECISION: AICore is THE runtime. Local runtimes stay in the app (opt-in, shared context
+  manager, 32k cap) but get no further investment unless the user asks.
+
 ## Vivo run 2 (2026-09-26, APK apk-38639e7-run5) — user screenshot
 - [CONFIRMED on Vivo] AICore/Nano: ONE web_fetch (article mode, the run-1 fix works), answer
   with real dates from the page head ("1544 … 1648"); the name (Lipparelli, char ~11.6k of a
@@ -341,7 +350,8 @@ llama.cpp, any model, not only Gemma) are the opt-in path for heavy tasks, conte
   [REQUIRES VIVO VALIDATION] E4B load, prefill tok/s at 16k/32k, heat, RAM with AICore idle.
 
 ## Next steps (priority order)
-1. Build (`assembleDebug`) + Vivo checklist above (incl. Sprint 5); record results here.
+1. [DONE] Build + install on the Vivo; AICore agent loop with web_fetch validated (runs 1-3).
+   Next on AICore: multi-step tasks (3+ tools), error recovery, loop behaviour on device.
 2. Use `countTokens`/`getTokenLimit` for exact budgeting once the API is checked against the AAR.
 3. Click-to-load for remote markdown images (egress).
 4. Measure E4B tool-call accuracy with arg names vs without; decide on the "never verify" rule.
