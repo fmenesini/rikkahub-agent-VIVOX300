@@ -94,19 +94,25 @@ Il flusso di ogni passo dell'agente:
 **Soluzione.** **Taglio mirato alla domanda**: oltre a inizio e fine, il risultato più recente conserva i passaggi che contengono le parole della domanda (le parole rare pesano di più; una domanda breve usa anche quella precedente; si tiene un po' di testo prima del punto trovato per non perdere il soggetto). Eccezione esplicita alla regola: se il risultato è tagliato e la risposta non è visibile, leggere prima di dire "non c'è".
 **Risultato.** Verificato sul testo reale: con entrambe le domande il prompt contiene "Paolo Lipparelli" e "1645-1650". **Sul Vivo (run 3) Nano ha completato il compito.**
 
-### 4.7 Modelli locali: limiti nascosti e rischio di crash
+### 4.7 Compiti in più passi (Vivo run 4: test A, B, C)
+
+**Test A (catena di 5 tool).** Calcolo corretto (376 anni), ma nella risposta finale mancava il nome trovato al primo passo. **Causa:** solo il risultato più recente veniva tagliato "con intelligenza"; i precedenti erano ridotti a 400 caratteri presi a caso. **Soluzione:** tutti i risultati sono tagliati in base alla domanda (700 caratteri per i precedenti), contano le frasi della domanda ("portò a termine") e i numeri (anni). Verificato sul testo reale: il nome sopravvive fino all'ultimo passo. Il file probabilmente non è stato scritto per mancanza del permesso Android "Accesso a tutti i file" (vedi 6.2).
+**Test B (errore 404).** Ha riconosciuto l'errore ma non ha provato il secondo indirizzo. **Causa:** regola "dopo un tool il lavoro è finito". **Soluzione:** nuova regola: se la richiesta ha altri passi chiama il tool successivo, se è completa rispondi, non ripetere mai la stessa chiamata.
+**Test C (loop).** Si è fermato dopo 2 controlli: protezione dai loop funzionante.
+
+### 4.8 Modelli locali: limiti nascosti e rischio di crash
 
 **Problema.** Il motore LiteRT limitava la cronologia a 3.000 caratteri qualunque fosse il modello, e tagliava solo messaggi interi. In un compito agentico tutti i passi stanno in un unico messaggio: i risultati passavano interi e potevano superare il contesto del motore, facendo chiudere l'app (crash nativo). llama.cpp aveva lo stesso limite.
 **Soluzione.** Un **gestore del contesto unico** (`ContextCompactor`) usato da AICore, LiteRT e llama.cpp, con budget proporzionato alla finestra reale del modello (massimo 32K, default 16K per Gemma 4).
 **Risultato sul Vivo.** Funziona, ma è troppo lento e consuma troppo (Qwen3 4B: 298 secondi di ragionamento). **Decisione: AICore è il motore; i modelli locali restano solo come opzione.**
 
-### 4.8 Aggiornare l'app senza disinstallare
+### 4.9 Aggiornare l'app senza disinstallare
 
 **Problema.** Ogni build su GitHub firmava l'APK con una chiave diversa: Android rifiutava l'aggiornamento.
 **Soluzione.** Chiave debug fissa nel repository (privato, solo per la versione debug) e nome dell'app **Rikka-mene** per distinguerla dall'altra installazione.
 **Nota di sicurezza.** Chi ha accesso al repository può firmare un aggiornamento della versione debug.
 
-### 4.9 Compilare senza il PC
+### 4.10 Compilare senza il PC
 
 **Problema.** L'ambiente cloud bloccava i repository Google e i download necessari al build.
 **Soluzione.** Abilitati i domini necessari nelle impostazioni dell'ambiente; Android SDK installato; mirror Google di Maven Central (Central rispondeva 429); submodule inizializzati; locale UTF-8. Workflow GitHub Actions che compila e pubblica l'APK quando un commit contiene `[release-apk]`.
@@ -138,6 +144,7 @@ Nota: gli scenari automatici usano un modello simulato che legge solo il prompt,
 - Modello: **Gemini Nano (FULL)** del provider AICore (in alto nella chat, tocca il nome del modello).
 - Tool locali dell'assistente (Impostazioni dell'assistente → Local tools): **Files**, **Download**, **Time Info**, **JavaScript Engine** per i test del capitolo 7. `web_fetch` è attivo di default.
 - I tool che scrivono, leggono file o eseguono codice chiedono sempre l'approvazione: è voluto.
+- Per scrivere e leggere file in `/sdcard` Android richiede il permesso **"Accesso a tutti i file"**: Impostazioni del telefono → App → Rikka-mene → Autorizzazioni → File e contenuti multimediali → *Consenti la gestione di tutti i file*. Dopo una reinstallazione va ridato.
 
 ### 6.3 Modelli locali (opzionale, sconsigliato per l'uso quotidiano)
 

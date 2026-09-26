@@ -76,7 +76,8 @@ class AICorePromptTest {
         assertTrue(p.prompt.contains("HEAD") && p.prompt.contains("TAIL"))
         assertTrue(p.prompt.contains("chars cut]"))
         val oldResult = p.prompt.substringAfter("OLD").substringBefore("</tool_result>")
-        assertTrue(oldResult.length < 500)
+        // Older results get 700 chars (was 400): still far less than the newest one.
+        assertTrue(oldResult.length < 800)
     }
 
     @Test
@@ -234,7 +235,8 @@ class AICorePromptTest {
         val ledger = p.prompt.substringAfter("[earlier steps omitted]\n").substringBefore("\nmodel: ")
         // A run of calls to one tool is one line: count, first and latest keys, outcomes.
         val line = ledger.lineSequence().first()
-        assertTrue(line, Regex("""^- termux_run_command x(\d+): step 1, .*, … \(\+\d+\), .*step \d+ -> \d+ ok, 1 error \(step 125\)$""").matches(line))
+        // Full key list when it fits, clipped ("…, (+N)") when it does not: either is fine.
+        assertTrue(line, Regex("""^- termux_run_command x(\d+): step 1, .*step \d+ -> \d+ ok, 1 error \(step 125\)$""").matches(line))
         val count = Regex("x(\\d+):").find(line)!!.groupValues[1].toInt()
         assertEquals("every dropped call is accounted for", 150 - count, Regex("result \\d+ ").findAll(p.prompt).count())
         assertFalse("ledger carries no result text", ledger.contains("yyyy"))
@@ -454,5 +456,23 @@ class AICorePromptTest {
         val out = clipRelevant(text, 2400, "chi portò a termine il cantiere delle mura e in quali anni")
         assertTrue(out, out.contains("Mario Rossi") && out.contains("1645-1650"))
         assertTrue(out.length <= 2400)
+    }
+
+    @Test
+    fun `a fact from an early step survives four later steps`() {
+        // Vivo test A: the name fetched in step 1 was gone from the prompt by the final answer.
+        val page = UIMessagePart.Tool("w1", "web_fetch", """{"url":"https://example.org/walls"}""", listOf(UIMessagePart.Text(article)))
+        val later = (2..5).map { i -> UIMessagePart.Tool("t$i", "get_time_info", "{}", listOf(UIMessagePart.Text("""{"step":$i,"date":"2026-09-26"}"""))) }
+        val msgs = listOf(user("Who completed the construction site of the walls, and how many years ago?"),
+            UIMessage(role = MessageRole.ASSISTANT, parts = listOf(page) + later))
+        val p = buildAiCorePrompt(msgs, listOf(readTool))
+        assertTrue(p.prompt, p.prompt.contains("Lipparelli"))
+    }
+
+    @Test
+    fun `the prefix asks for the next step instead of ending after one tool`() {
+        val prefix = buildAiCoreSystemPrefix(listOf(tool("web_fetch", "Fetch a URL", "url"))).first
+        assertTrue(prefix.contains("call the NEXT tool"))
+        assertFalse(prefix.contains("the work is DONE"))
     }
 }

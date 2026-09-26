@@ -303,6 +303,21 @@ at char ~16k of the article text: Paolo Lipparelli, 1645-1650).
   [REQUIRES VIVO VALIDATION] re-run the same prompt on the next APK.
 - Minor: Nano answered in English to an Italian prompt on the first turn.
 
+## Vivo run 4 (2026-09-26, APK apk-b9e1544-run6) — tests A/B/C from the manual, screenshots
+- A (5-tool chain): 7 tool steps, correct 376-year arithmetic, but the final answer lost the
+  name fetched in step 1; the file most likely not written (user). [CONFIRMED cause, code]
+  older results were clipped blind to 400 chars. [MITIGATED] all results clipped by relevance
+  (older ones 700 chars, window anchored on the rarest match), phrase pairs of the question
+  ("portò a termine") and 4+ digit numbers weigh in; checked offline on the real article at
+  the end of the chain. [PROBABLE] write failed for lack of "All files access" (Android 11+,
+  write_text_file writes /sdcard directly; permission reset by the reinstall) — needs the
+  write_text_file result screenshot.
+- B (error recovery): saw the 404 but never fetched the second URL, answered "Parla di
+  Lucca" from nothing. [CONFIRMED cause] prefix rule "after ANY tool returns, the work is
+  DONE". [MITIGATED] rule now: more steps → call the NEXT tool; done → reply; never repeat a call.
+- C (loop): stopped after 2 list_files calls, no loop. Final line misleading ("I'll continue
+  checking"). OK for safety.
+
 ## Vivo run 3 (2026-09-26, APK apk-b9e1544-run6) — user report + screenshot
 - [CONFIRMED on Vivo] AICore/Nano FULL solved the Lucca task: one web_fetch with
   extract_mode "text" (full page text, truncated=false); user reports it worked well. The

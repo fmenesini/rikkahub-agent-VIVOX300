@@ -82,8 +82,9 @@ object ContextCompactor {
                         { at -> "${RuntimeTools.READ_TOOL_OUTPUT} id=${p.toolCallId} offset=$at" }
                     } else null
                     // The newest result keeps the passages that match what the user asked.
-                    val clippedResult = if (latest) clipRelevant(result, caps.latestResult, query, hint)
-                        else clipMiddle(result, caps.oldResult, hint)
+                    // Every result is clipped by relevance: in a multi-step task the answer often
+                    // comes from an earlier step, not only from the newest one.
+                    val clippedResult = clipRelevant(result, if (latest) caps.latestResult else caps.oldResult, query, hint)
                     val clippedInput = clipMiddle(p.input.ifBlank { "{}" }, if (latest) caps.latestInput else caps.oldInput)
                     val newOutput = if (clippedResult === result) p.output else
                         listOf(UIMessagePart.Text(clippedResult)) + p.output.filter { it !is UIMessagePart.Text }
@@ -224,7 +225,7 @@ object ContextCompactor {
                 val latest = (tokenBudget * 3 / 4).coerceIn(2400, 24_000)
                 return Caps(
                     latestResult = latest,
-                    oldResult = (latest / 6).coerceAtLeast(400),
+                    oldResult = (latest / 6).coerceAtLeast(700),
                     latestInput = (latest / 2).coerceIn(1200, 8000),
                     oldInput = (latest / 10).coerceIn(240, 1600),
                     task = latest.coerceAtLeast(2400),

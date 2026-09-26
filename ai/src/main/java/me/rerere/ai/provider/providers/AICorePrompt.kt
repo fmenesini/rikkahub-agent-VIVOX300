@@ -109,9 +109,24 @@ private val RELEVANCE_STOPWORDS = setOf(
 )
 
 /** Content words of [query], lowercased (≥ 4 letters, stopwords removed). */
-internal fun relevanceWords(query: String): Set<String> =
+internal fun relevanceWords(query: String): Set<String> = relevanceSequence(query).toSet()
+
+/**
+ * Content words of [query] in order. Numbers of 4+ digits count (years are strong clues in
+ * a question), shorter ones do not.
+ */
+private fun relevanceSequence(query: String): List<String> =
     RELEVANCE_WORD.findAll(query.lowercase()).map { it.value }
-        .filter { it !in RELEVANCE_STOPWORDS && !it.all(Char::isDigit) }.toSet()
+        .filter { it !in RELEVANCE_STOPWORDS }.toList()
+
+/**
+ * Pairs of consecutive query words, e.g. ("portò", "termine") for "portò a termine": when
+ * a passage has them close together it is about the same thing the question is.
+ */
+private fun relevancePairs(query: String): List<Regex> =
+    relevanceSequence(query).zipWithNext().filter { (a, b) -> a != b }.distinct().map { (a, b) ->
+        Regex(Regex.escape(a) + """[^\p{L}\p{N}]+(?:[\p{L}']{1,3}[^\p{L}\p{N}]+){0,2}""" + Regex.escape(b))
+    }
 
 /**
  * What the newest tool result is being read for: the last user message, plus the one before
@@ -139,7 +154,7 @@ internal fun clipRelevant(
 ): String {
     if (text.length <= maxChars) return text
     val words = relevanceWords(query)
-    if (words.isEmpty() || maxChars < 600) return clipMiddle(text, maxChars, resumeHint)
+    if (words.isEmpty() || maxChars < 500) return clipMiddle(text, maxChars, resumeHint)
     val lower = text.lowercase()
     val freq = words.associateWith { w -> Regex(Regex.escape(w)).findAll(lower).count() }
     val weight = freq.filterValues { it > 0 }.mapValues { (_, n) -> 1.0 / kotlin.math.ln(1.0 + n) }
@@ -160,9 +175,13 @@ internal fun clipRelevant(
     }
     val headLen = maxChars / 5
     val tailLen = maxChars / 10
+    val pairs = relevancePairs(query)
     fun score(r: IntRange): Double {
         val c = lower.substring(r.first, r.last + 1)
-        return weight.entries.sumOf { (w, v) -> if (c.contains(w)) v else 0.0 }
+        val single = weight.entries.sumOf { (w, v) -> if (c.contains(w)) v else 0.0 }
+        // A phrase of the question found as such outweighs scattered single words.
+        val phrase = pairs.count { it.containsMatchIn(c) } * 2.0
+        return single + phrase
     }
     val candidates = chunks.filter { it.first >= headLen && it.last < text.length - tailLen }
         .map { it to score(it) }.filter { it.second > 0.0 }
@@ -174,13 +193,25 @@ internal fun clipRelevant(
     val markerCost = marker(0, text.length).length
     var budget = maxChars - headLen - tailLen - markerCost // the marker before the tail
     val picked = mutableListOf<IntRange>()
+    // The rarest query word present anchors a passage when there is room only for part of it.
+    val anchorWords = weight.entries.sortedByDescending { it.value }.map { it.key }
     for ((r, _) in candidates) {
+        val avail = budget - markerCost
+        if (avail < 80) break
         // Take some context around the match: a long sentence is split across chunks, and its
         // subject (who, what) often sits just before the words that matched the question.
         var from = maxOf(headLen, r.first - CONTEXT_CHARS)
         var to = minOf(text.length - tailLen - 1, r.last + CONTEXT_CHARS / 2)
-        while (from < r.first && !text[from - 1].isWhitespace()) from++
-        while (to > r.last && !text[to + 1].isWhitespace()) to--
+        if (to - from + 1 > avail) {
+            // Too big for what is left (tight caps for older results): keep a window around
+            // the rarest matching word, two thirds of it before the word.
+            val chunk = lower.substring(r.first, r.last + 1)
+            val anchor = r.first + (anchorWords.firstNotNullOfOrNull { w -> chunk.indexOf(w).takeIf { it >= 0 } } ?: 0)
+            from = maxOf(from, anchor - avail * 2 / 3)
+            to = minOf(to, from + avail - 1)
+        }
+        while (from < to && from > 0 && !text[from - 1].isWhitespace()) from++
+        while (to > from && to + 1 < text.length && !text[to + 1].isWhitespace()) to--
         val range = from..to
         if (picked.any { it.first <= range.last && range.first <= it.last }) continue
         val cost = range.last - range.first + 1 + markerCost
@@ -234,7 +265,10 @@ internal data class AiCorePrompt(
 // Per-unit char caps. The newest tool result is what the model must act on next, so it
 // gets the largest slice; older results only need to remind the model what already happened.
 private const val LATEST_TOOL_RESULT_CHARS = 2400
-private const val OLD_TOOL_RESULT_CHARS = 400
+// Older results keep 700 chars, picked by relevance to the question: in a multi-step task the
+// fact the final answer needs often comes from an earlier step (Vivo test A lost the name
+// fetched in step 1 once four more results came after it).
+private const val OLD_TOOL_RESULT_CHARS = 700
 private const val LATEST_TOOL_INPUT_CHARS = 1200
 private const val OLD_TOOL_INPUT_CHARS = 240
 private const val TASK_USER_CHARS = 2400
@@ -451,7 +485,7 @@ private fun flattenForAiCore(history: List<UIMessage>, taskIndex: Int, retrievab
                         val clipped = if (latest) {
                             clipRelevant(neutralizeTranscriptMarkers(result), LATEST_TOOL_RESULT_CHARS, query, resumeHint)
                         } else {
-                            clipMiddle(neutralizeTranscriptMarkers(result), OLD_TOOL_RESULT_CHARS, resumeHint)
+                            clipRelevant(neutralizeTranscriptMarkers(result), OLD_TOOL_RESULT_CHARS, query, resumeHint)
                         }
                         out += PromptUnit(role, "<tool_result>$clipped</tool_result>")
                     }
@@ -566,7 +600,9 @@ internal fun buildAiCoreSystemPrefix(
         // SAME tool_call after each {"success":true} response because nothing told it the
         // turn was over. The loop-guard catches this at trip 3 but the user sees 3 redundant
         // tool runs first. Naming "any" tool here lets Nano finalise on turn 2.
-        appendLine("After ANY tool returns {\"success\":true} (or any non-error result), the work is DONE. Reply with ONE short confirmation line and stop. NEVER re-emit the same tool_call. NEVER call a verification tool (read_window_tree, take_screenshot, find_node, etc.) to double-check.")
+        // Was "after ANY tool returns, the work is DONE": it stopped every multi-step request
+        // after its first step (Vivo test B: a 404, then no second fetch, a guessed answer).
+        appendLine("After a tool returns: if the user's request has more steps (or asked for another try if one failed), call the NEXT tool now. Only when every step is done, reply briefly and stop. NEVER re-emit the same tool_call with the same input. NEVER call a verification tool (read_window_tree, take_screenshot, find_node, etc.) unless the user asked for it.")
         // The rule above ended turns before the model looked at text it had been shown only
         // in part; reading a cut result is not a verification, so it gets an explicit exception.
         if (tools.any { it.name == RuntimeTools.READ_TOOL_OUTPUT }) {
