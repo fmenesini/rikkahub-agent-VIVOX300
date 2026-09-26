@@ -391,6 +391,25 @@ llama.cpp, any model, not only Gemma) are the opt-in path for heavy tasks, conte
   [REQUIRES VIVO VALIDATION]. If Nano still stops early, next step is enforcement in
   GenerationLoop (one bounded nudge when the model ends with named tools uncalled).
 
+## Vivo run 6 (2026-09-26, release v1.0.1) — Test A v2 again, screenshot
+- [CONFIRMED] Full chain in one turn: web_fetch, get_time_info, eval_javascript,
+  write_text_file, read_file, then the file line (`PAOLO LIPPARELLI | 1650 | 376`, uppercased).
+  The answer shows "2/2": it was a regeneration, whether attempt 1 failed is unknown.
+- [PARTIAL] Follow-up "Chi le ha portate a termine, e in quali anni furono costruite?" got the
+  same file line again instead of "Paolo Lipparelli, 1645-1650": the earlier "answer only with
+  the file content" instruction sticks. Name right, year range missing. Nano limit; not fixed.
+
+## Vivo run 7 (2026-09-26, release v1.0.1) — Test A score, Tests B and C, screenshots
+- [CONFIRMED] Test A v2 on 1.0.1 = 1 of 2: the first attempt still stopped early (user
+  regenerated). The progress line helps but is not reliable alone.
+- [CONFIRMED] Test B (numbered): web_fetch 404 → web_fetch on /wiki/Lucca → one sentence from
+  the page. Fixed since run 4.
+- [CONFIRMED] Test C: 4 list_files, then stopped and said fantasma.txt is not there (answered
+  in English).
+- Fix (1.0.2): GenerationLoop, AICore only — when the model ends with tools the task names
+  still uncalled (`TaskProgress.pending`), one more step instead of accepting the answer (once
+  per generateText). [REQUIRES VIVO VALIDATION]
+
 ## Next steps (priority order)
 1. [DONE] Build + install on the Vivo; AICore agent loop with web_fetch validated (runs 1-3).
    Next on AICore: multi-step tasks (3+ tools), error recovery, loop behaviour on device.
