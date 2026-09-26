@@ -1039,10 +1039,22 @@ class GenerationLoop(
                                     UIMessagePart.Text(
                                         json.encodeToString(buildJsonObject {
                                             put("error", JsonPrimitive("tool_not_found"))
+                                            // Closest names first: a small model repeats its
+                                            // guess rather than scanning a 30-name list.
+                                            val suggestions = me.rerere.rikkahub.data.ai.tools.suggestToolNames(
+                                                tool.toolName, toolsInternal.map { it.name },
+                                            )
                                             put(
                                                 "detail",
-                                                JsonPrimitive("Tool '${tool.toolName}' was called but is not among the tools available this turn."),
+                                                JsonPrimitive(
+                                                    "Tool '${tool.toolName}' does not exist. " + if (suggestions.isNotEmpty()) {
+                                                        "Did you mean: ${suggestions.joinToString(", ")}? Call it with the same input."
+                                                    } else "Pick one of the tools below.",
+                                                ),
                                             )
+                                            if (suggestions.isNotEmpty()) {
+                                                put("did_you_mean", JsonPrimitive(suggestions.joinToString(", ")))
+                                            }
                                             put(
                                                 "tools_available_this_turn",
                                                 JsonPrimitive(toolsInternal.joinToString(", ") { it.name }.take(1500)),

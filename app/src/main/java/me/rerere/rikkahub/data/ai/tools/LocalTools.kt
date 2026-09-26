@@ -908,6 +908,10 @@ class LocalTools(
             tools.add(listFilesTool())
             tools.add(readFileTool())
             tools.add(writeBinaryFileTool())
+            // "Files" promises read AND write; plain-text writing used to come only with the
+            // Download toggle, so a Files-only assistant had no write_text_file (Vivo test A:
+            // the model guessed "write_file" and gave up). Still approval-gated (ALWAYS_ASK).
+            if (!options.contains(LocalToolOption.Download)) tools.add(writeTextFileTool(context))
             tools.add(deleteFileTool())
             tools.add(moveFileTool())
             tools.add(copyFileTool())

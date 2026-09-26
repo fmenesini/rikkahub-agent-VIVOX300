@@ -309,9 +309,11 @@ at char ~16k of the article text: Paolo Lipparelli, 1645-1650).
   older results were clipped blind to 400 chars. [MITIGATED] all results clipped by relevance
   (older ones 700 chars, window anchored on the rarest match), phrase pairs of the question
   ("portò a termine") and 4+ digit numbers weigh in; checked offline on the real article at
-  the end of the chain. [PROBABLE] write failed for lack of "All files access" (Android 11+,
-  write_text_file writes /sdcard directly; permission reset by the reinstall) — needs the
-  write_text_file result screenshot.
+  the end of the chain. [FALSIFIED] "write failed for lack of All files access": the tool
+  result screenshot shows Nano called "write_file" → tool_not_found; write_text_file was NOT
+  among the tools (it came only with the Download toggle, the user had Files on). Nano retried
+  the same wrong name and gave up. [MITIGATED] Files now includes write_text_file (still
+  ALWAYS_ASK); tool_not_found carries did_you_mean (shared name parts, edit distance).
 - B (error recovery): saw the 404 but never fetched the second URL, answered "Parla di
   Lucca" from nothing. [CONFIRMED cause] prefix rule "after ANY tool returns, the work is
   DONE". [MITIGATED] rule now: more steps → call the NEXT tool; done → reply; never repeat a call.
