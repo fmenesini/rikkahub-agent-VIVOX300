@@ -526,4 +526,49 @@ class AICorePromptTest {
         assertTrue(line, line.contains("write_text_file done") && line.contains("call read_file now"))
         assertFalse(line, line.contains("web_fetch"))
     }
+
+    // ---- web search (Vivo test D) ----
+
+    @Test
+    fun `tool call with trailing junk after the object still runs`() {
+        // Vivo: {"name":…,"input":{…}}, "stop": true} was shown as raw text.
+        val parser = ToolTagParser()
+        val parts = parser.feed("<tool_call>{\"name\":\"search_web\",\"input\":{\"query\":\"Chi completò le mura {x}\"}}, \"stop\": true}</tool_call>") +
+            parser.flushPending()
+        val tool = parts.filterIsInstance<UIMessagePart.Tool>().single()
+        assertEquals("search_web", tool.toolName)
+        assertEquals("""{"query":"Chi completò le mura {x}"}""", tool.input)
+        assertEquals("{\"a\":\"}\"}", leadingJsonObject("{\"a\":\"}\"} tail"))
+        assertNull(leadingJsonObject("{\"a\":1"))
+    }
+
+    private fun searchJson(n: Int) = buildString {
+        append("{\"retrievedAt\":\"2026-09-26T17:20:00Z\",\"items\":[")
+        for (i in 1..n) {
+            if (i > 1) append(',')
+            append("{\"id\":\"ab$i\",\"index\":$i,\"title\":\"Mura di Lucca risultato $i\",")
+            append("\"url\":\"https://site$i.example/mura-lucca\",\"text\":\"")
+            append("Le mura furono completate nel 1650 sotto la direzione di vari ingegneri. ".repeat(20))
+            append("\"}")
+        }
+        append("],\"images\":[\"https://img.example/1.jpg\"]}")
+    }
+
+    @Test
+    fun `search results keep every url within the window`() {
+        val compact = compactSearchResult(searchJson(10))!!
+        for (i in 1..8) assertTrue(compact, compact.contains("https://site$i.example/mura-lucca"))
+        assertTrue(compact.contains("(+2 more)"))
+        assertFalse(compact.contains("img.example"))
+        assertNull(compactSearchResult("""{"ok":true}"""))
+        assertNull(compactSearchResult("plain text"))
+
+        val search = UIMessagePart.Tool("s1", "search_web", """{"query":"Mura di Lucca chi le completò"}""",
+            listOf(UIMessagePart.Text(searchJson(10))))
+        val p = buildAiCorePrompt(listOf(user("Con search_web cerca, poi con web_fetch leggi il risultato più pertinente."),
+            UIMessage(role = MessageRole.ASSISTANT, parts = listOf(search))),
+            listOf(tool("search_web", "d", "query"), tool("web_fetch", "d", "url"), readTool))
+        for (i in 1..8) assertTrue(p.prompt, p.prompt.contains("https://site$i.example/mura-lucca"))
+        assertFalse(p.prompt, p.prompt.contains("read_tool_output id=s1"))
+    }
 }
