@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Debug build name: tells this fork's test build apart from other RikkaHub installs. -->
+<resources>
+    <string name="app_name" translatable="false">Rikka-mene</string>
+</resources>

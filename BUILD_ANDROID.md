@@ -36,6 +36,12 @@ echo "sdk.dir=$HOME/Android/Sdk" > local.properties   # or export ANDROID_HOME
 ./gradlew :app:assembleDebug
 ```
 
+## Debug signing and name
+Debug builds are signed with `app/debug.keystore` (committed, debug only, password `android`,
+SHA-256 239d6297…af03), so APKs from GitHub Actions, the sandbox and the Dell all install over
+each other. The debug app is labelled **Rikka-mene** (`app/src/debug/res/values*/strings.xml`).
+Debug APKs signed before this key (release apk-f5f3010-run2 and older) must be uninstalled once.
+
 ## Output
 `app/build/outputs/apk/debug/`
 - `app-arm64-v8a-debug.apk` ← install this on the Vivo X300

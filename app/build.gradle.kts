@@ -42,6 +42,15 @@ android {
     }
 
     signingConfigs {
+        // Fixed debug key shared by every machine that builds (GitHub Actions, sandbox, Dell):
+        // with each machine's own random debug key, a new debug APK could not be installed
+        // over the previous one. Debug builds only (package excp.rikkahub.debug).
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
         create("release") {
             val localProperties = Properties()
             val localPropertiesFile = rootProject.file("local.properties")
@@ -88,6 +97,7 @@ android {
         }
         debug {
             applicationIdSuffix = ".debug"
+            signingConfig = signingConfigs.getByName("debug")
             buildConfigField("String", "VERSION_NAME", "\"${android.defaultConfig.versionName}\"")
             buildConfigField("String", "VERSION_CODE", "\"${android.defaultConfig.versionCode}\"")
             buildConfigField("String", "UPDATE_API_URL", "\"\"")
